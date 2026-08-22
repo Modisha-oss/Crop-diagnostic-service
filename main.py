@@ -40,19 +40,27 @@ def send_advisory_email(to_email: str, subject: str, report_body: str):
 
 
 def process_farm_report(payload: dict):
-    """Background task to run Gemini assessment and email report."""
-    site_location = payload.get("site_location", "Unknown Location")
-    region = payload.get("region", "South Africa")
-    vegetable = payload.get("vegetable", "Crop")
-    weekly_observation = (
-        payload.get("weekly_observation")
-        or payload.get("observations")
-        or payload.get("field_notes")
-        or "No field observations provided."
-    )
-    farmer_email = payload.get("farmer_email") or payload.get("Farmers_Email")
+    """
+    Extracts ONLY diagnostic data (observations, email, crop type, location/region)
+    and ignores stock/sales/inventory metrics.
+    """
+    def get_field_value(keys_to_search, default=""):
+        for key, value in payload.items():
+            for k in keys_to_search:
+                if k.lower() in key.lower() and value:
+                    return str(value).strip()
+        return default
 
-    # Photo Attachment processing
+    # 1. Target EXACT fields required for AI analysis
+    site_location = get_field_value(["site_location", "site", "location"], "Turfloop")
+    region = get_field_value(["region", "province"], "Limpopo")
+    vegetable = get_field_value(["vegetable", "crop", "produce"], "Crop")
+    weekly_observation = get_field_value(["weekly_observation", "observation", "field_notes", "notes"], "No observations provided.")
+    farmer_email = get_field_value(["farmer_email", "email", "contact_email"], "")
+
+    print(f"--> Extracted Target Data: Site='{site_location}', Region='{region}', Crop='{vegetable}', Email='{farmer_email}'")
+
+    # 2. Extract Photo Attachment (if present)
     attachments = payload.get("_attachments", [])
     image_bytes = None
 
@@ -67,59 +75,53 @@ def process_farm_report(payload: dict):
             except Exception as e:
                 print(f"Failed to fetch photo: {e}")
 
-    # Build Agricultural Prompt
+    # 3. Build Diagnostic Prompt (Excludes sales/inventory data)
     prompt_text = f"""
-    You are an agricultural support assistant helping smallholder farmers in South Africa.
+    You are an agricultural support assistant for smallholder farmers in South Africa.
 
-    Analyse the following farm report and attached crop image (if provided):
+    Analyze ONLY the following diagnostic report and attached crop image (if provided):
 
-    SITE INFORMATION:
-    - Site: {site_location}
+    SITE DETAILS:
+    - Site Location: {site_location}
     - Region: {region}
 
-    CROP INFORMATION:
+    CROP DETAILS:
     - Crop: {vegetable}
 
-    FARMER'S WEEKLY OBSERVATION:
+    FIELD OBSERVATION:
     {weekly_observation}
 
-    Please provide a practical agricultural assessment including:
-    1. Possible causes
-    2. Possible pests
-    3. Possible diseases
-    4. Possible nutrient deficiencies
-    5. Possible environmental causes
-    6. Severity of the problem (Mild / Moderate / Severe)
-    7. Recommended actionable treatment steps
-    8. What the farmer should monitor
-    9. Confidence level (High / Medium / Low)
+    Provide a practical agricultural report containing:
+    1. Possible Causes / Issues
+    2. Pests, Diseases, or Nutrient Deficiencies identified
+    3. Severity (Mild / Moderate / Severe)
+    4. Actionable treatment steps suited for local farming conditions
+    5. What the farmer should monitor next week
+    6. Confidence Level (High / Medium / Low)
 
-    IMPORTANT:
-    - Do not claim that a diagnosis is certain when there is insufficient information.
-    - Clearly explain uncertainty.
-    - Give practical recommendations suitable for smallholder farmers in South Africa.
-    - Do not recommend dangerous or excessive chemical applications without sufficient evidence.
+    Do NOT include or analyze sales, financial, or inventory metrics.
     """
 
     contents = [prompt_text]
     if image_bytes:
-        image_part = types.Part.from_bytes(
-            data=image_bytes, mime_type="image/jpeg"
-        )
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
         contents.append(image_part)
 
-    print("Generating assessment with Gemini 2.5 Flash in background...")
+    print("Generating targeted assessment with Gemini...")
     try:
         response = client.models.generate_content(
-            model="gemini-3.6-flash", contents=contents
+            model="gemini-2.5-flash", 
+            contents=contents
         )
         diagnostic_report = response.text
 
+        # 4. Email the report directly if an email was captured
         if farmer_email and SENDER_EMAIL and SENDER_PASSWORD:
-            subject_line = (
-                f"AI Agricultural Assessment - {vegetable} ({site_location})"
-            )
+            subject_line = f"AI Agricultural Assessment - {vegetable} ({site_location})"
             send_advisory_email(farmer_email, subject_line, diagnostic_report)
+        else:
+            print(f"--> Skipping email: farmer_email='{farmer_email}' | SENDER_EMAIL={bool(SENDER_EMAIL)}")
+
     except Exception as err:
         print(f"Error during AI analysis: {err}")
 
@@ -139,10 +141,8 @@ async def handle_kobo_webhook(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    # Queue the heavy work to background tasks
     background_tasks.add_task(process_farm_report, payload)
 
-    # Respond to Kobo immediately (< 1 second)
     return {
         "status": "success",
         "message": "Submission received and queued for analysis.",
