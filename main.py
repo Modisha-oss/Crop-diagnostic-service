@@ -6,7 +6,7 @@ import requests
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 
 from google import genai
 from google.genai import types
@@ -54,7 +54,9 @@ else:
 
     client = None
 
-    print("WARNING: GEMINI_API_KEY is missing.")
+    print(
+        "WARNING: GEMINI_API_KEY is missing."
+    )
 
 
 # ============================================================
@@ -72,7 +74,9 @@ def send_advisory_email(
     print("          EMAIL PROCESS STARTED")
     print("==========================================")
 
-    print(f"Recipient: {to_email}")
+    print(
+        f"Recipient: {to_email}"
+    )
 
     print(
         f"Sender configured: "
@@ -83,6 +87,7 @@ def send_advisory_email(
         f"Sender password configured: "
         f"{bool(SENDER_PASSWORD)}"
     )
+
 
     # --------------------------------------------------------
     # CHECK EMAIL SETTINGS
@@ -97,6 +102,7 @@ def send_advisory_email(
 
         return
 
+
     if not SENDER_PASSWORD:
 
         print(
@@ -106,6 +112,7 @@ def send_advisory_email(
 
         return
 
+
     if not to_email:
 
         print(
@@ -113,6 +120,7 @@ def send_advisory_email(
         )
 
         return
+
 
     # --------------------------------------------------------
     # CREATE EMAIL
@@ -133,6 +141,7 @@ def send_advisory_email(
         )
     )
 
+
     # --------------------------------------------------------
     # CONNECT TO GMAIL
     # --------------------------------------------------------
@@ -143,15 +152,18 @@ def send_advisory_email(
             "--> Connecting to Gmail SMTP..."
         )
 
+
         with smtplib.SMTP_SSL(
             "smtp.gmail.com",
             465,
             timeout=30
         ) as server:
 
+
             print(
                 "--> Connected to Gmail SMTP."
             )
+
 
             # ------------------------------------------------
             # LOGIN
@@ -161,14 +173,17 @@ def send_advisory_email(
                 "--> Logging into Gmail..."
             )
 
+
             server.login(
                 SENDER_EMAIL,
                 SENDER_PASSWORD
             )
 
+
             print(
                 "--> Gmail login successful."
             )
+
 
             # ------------------------------------------------
             # SEND EMAIL
@@ -178,11 +193,13 @@ def send_advisory_email(
                 "--> Sending agricultural report..."
             )
 
+
             server.sendmail(
                 SENDER_EMAIL,
                 to_email,
                 msg.as_string()
             )
+
 
             print()
             print(
@@ -200,6 +217,7 @@ def send_advisory_email(
             print(
                 f"Report sent to: {to_email}"
             )
+
 
     # --------------------------------------------------------
     # EMAIL ERROR
@@ -246,6 +264,7 @@ def process_farm_report(payload: dict):
     print("       NEW FARM REPORT RECEIVED")
     print("==========================================")
 
+
     print(
         f"Incoming Payload Keys: "
         f"{list(payload.keys())}"
@@ -262,9 +281,9 @@ def process_farm_report(payload: dict):
 
             for key, value in data.items():
 
-                # --------------------------------------------
+                # ------------------------------------------------
                 # CHECK FIELD NAME FOR EMAIL
-                # --------------------------------------------
+                # ------------------------------------------------
 
                 if (
                     "email" in key.lower()
@@ -274,9 +293,10 @@ def process_farm_report(payload: dict):
 
                     return value.strip()
 
-                # --------------------------------------------
+
+                # ------------------------------------------------
                 # SEARCH NESTED DATA
-                # --------------------------------------------
+                # ------------------------------------------------
 
                 result = find_email(value)
 
@@ -403,6 +423,7 @@ def process_farm_report(payload: dict):
             f"{len(attachments)}"
         )
 
+
         # ----------------------------------------------------
         # FIRST ATTACHMENT
         # ----------------------------------------------------
@@ -451,7 +472,7 @@ def process_farm_report(payload: dict):
 
 
                     # --------------------------------------------
-                    # TRY TO DETECT IMAGE TYPE
+                    # DETECT IMAGE TYPE
                     # --------------------------------------------
 
                     content_type = (
@@ -489,7 +510,7 @@ def process_farm_report(payload: dict):
                 else:
 
                     print(
-                        f"--> Photo download failed."
+                        "--> Photo download failed."
                     )
 
                     print(
@@ -631,9 +652,9 @@ or inventory analysis.
     ]
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # ADD IMAGE IF AVAILABLE
-    # --------------------------------------------------------
+    # ========================================================
 
     if image_bytes:
 
@@ -646,13 +667,16 @@ or inventory analysis.
                 )
             )
 
+
             contents.append(
                 image_part
             )
 
+
             print(
                 "--> Crop image added to Gemini analysis."
             )
+
 
         except Exception as error:
 
@@ -671,6 +695,7 @@ or inventory analysis.
     # ========================================================
 
     print()
+
     print(
         "=========================================="
     )
@@ -696,18 +721,24 @@ or inventory analysis.
 
 
         diagnostic_report = (
+
             response.text
+
             if response.text
+
             else
+
             "Gemini did not return an assessment."
+
         )
 
 
         # ====================================================
-        # DISPLAY AI REPORT IN RENDER LOGS
+        # DISPLAY AI REPORT
         # ====================================================
 
         print()
+
         print(
             "=========================================="
         )
@@ -736,14 +767,20 @@ or inventory analysis.
         if farmer_email:
 
             print()
+
             print(
                 "--> Farmer email detected."
             )
 
+
             subject_line = (
+
                 "AI Agricultural Assessment - "
+
                 f"{vegetable} "
+
                 f"({site_location})"
+
             )
 
 
@@ -761,6 +798,7 @@ or inventory analysis.
         else:
 
             print()
+
             print(
                 "=========================================="
             )
@@ -786,6 +824,7 @@ or inventory analysis.
     except Exception as error:
 
         print()
+
         print(
             "=========================================="
         )
@@ -846,7 +885,11 @@ def health():
         bool(GEMINI_API_KEY),
 
         "email_configured":
-        bool(SENDER_EMAIL and SENDER_PASSWORD)
+        bool(
+            SENDER_EMAIL
+            and
+            SENDER_PASSWORD
+        )
 
     }
 
@@ -857,16 +900,12 @@ def health():
 
 @app.post("/webhook")
 async def handle_kobo_webhook(
-
-    request: Request,
-
-    background_tasks: BackgroundTasks
-
+    request: Request
 ):
 
-    # --------------------------------------------------------
+    # ========================================================
     # RECEIVE KOBO DATA
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -883,11 +922,12 @@ async def handle_kobo_webhook(
         )
 
 
-    # --------------------------------------------------------
-    # DISPLAY CONFIRMATION
-    # --------------------------------------------------------
+    # ========================================================
+    # CONFIRM KOBO SUBMISSION
+    # ========================================================
 
     print()
+
     print(
         "=========================================="
     )
@@ -901,29 +941,108 @@ async def handle_kobo_webhook(
     )
 
 
-    # --------------------------------------------------------
-    # PROCESS IN BACKGROUND
-    # --------------------------------------------------------
+    # ========================================================
+    # SHOW PAYLOAD KEYS
+    # ========================================================
 
-    background_tasks.add_task(
-
-        process_farm_report,
-
-        payload
-
+    print(
+        f"Payload keys: "
+        f"{list(payload.keys())}"
     )
 
 
-    # --------------------------------------------------------
-    # RETURN RESPONSE TO KOBO
-    # --------------------------------------------------------
+    # ========================================================
+    # START FARM REPORT PROCESS
+    # ========================================================
+
+    print()
+
+    print(
+        "=========================================="
+    )
+
+    print(
+        "       STARTING FARM REPORT PROCESS"
+    )
+
+    print(
+        "=========================================="
+    )
+
+
+    try:
+
+        process_farm_report(
+            payload
+        )
+
+
+    except Exception as error:
+
+        print()
+
+        print(
+            "=========================================="
+        )
+
+        print(
+            "       FARM REPORT PROCESSING ERROR"
+        )
+
+        print(
+            "=========================================="
+        )
+
+        print(
+            "Error type:",
+            type(error).__name__
+        )
+
+        print(
+            "Error message:",
+            str(error)
+        )
+
+        print(
+            "=========================================="
+        )
+
+
+        raise HTTPException(
+
+            status_code=500,
+
+            detail=
+            "Farm report processing failed"
+
+        )
+
+
+    # ========================================================
+    # SUCCESS RESPONSE
+    # ========================================================
+
+    print()
+
+    print(
+        "=========================================="
+    )
+
+    print(
+        "       FARM REPORT PROCESS COMPLETED"
+    )
+
+    print(
+        "=========================================="
+    )
+
 
     return {
 
-        "status": "success",
+        "status":
+        "success",
 
         "message":
-        "Submission received and queued "
-        "for analysis."
+        "Farm report analysed successfully."
 
     }
