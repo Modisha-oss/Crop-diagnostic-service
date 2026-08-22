@@ -153,7 +153,7 @@ def send_advisory_email(
         )
 
 
-        with smtplib.STARTTLS(
+        with smtplib.SMTP(
             "smtp.gmail.com",
             587,
             timeout=30
@@ -163,6 +163,21 @@ def send_advisory_email(
             print(
                 "--> Connected to Gmail SMTP."
             )
+
+
+            # ------------------------------------------------
+            # START TLS ENCRYPTION
+            # ------------------------------------------------
+
+            print(
+                "--> Starting TLS encryption..."
+            )
+
+            server.ehlo()
+
+            server.starttls()
+
+            server.ehlo()
 
 
             # ------------------------------------------------
@@ -231,7 +246,7 @@ def send_advisory_email(
         )
 
         print(
-            "             EMAIL ERROR"
+            "              EMAIL ERROR"
         )
 
         print(
@@ -713,7 +728,7 @@ or inventory analysis.
 
         response = client.models.generate_content(
 
-            model="gemini-3.6-flash",
+            model="gemini-2.5-flash",
 
             contents=contents
 
@@ -744,7 +759,7 @@ or inventory analysis.
         )
 
         print(
-            "       AI REPORT GENERATED"
+            "        AI REPORT GENERATED"
         )
 
         print(
@@ -804,7 +819,7 @@ or inventory analysis.
             )
 
             print(
-                "       NO FARMER EMAIL FOUND"
+                "        NO FARMER EMAIL FOUND"
             )
 
             print(
@@ -830,7 +845,7 @@ or inventory analysis.
         )
 
         print(
-            "          GEMINI PROCESS ERROR"
+            "           GEMINI PROCESS ERROR"
         )
 
         print(
@@ -933,7 +948,7 @@ async def handle_kobo_webhook(
     )
 
     print(
-        "       KOBO SUBMISSION RECEIVED"
+        "        KOBO SUBMISSION RECEIVED"
     )
 
     print(
@@ -962,7 +977,7 @@ async def handle_kobo_webhook(
     )
 
     print(
-        "       STARTING FARM REPORT PROCESS"
+        "        STARTING FARM REPORT PROCESS"
     )
 
     print(
@@ -986,7 +1001,7 @@ async def handle_kobo_webhook(
         )
 
         print(
-            "       FARM REPORT PROCESSING ERROR"
+            "        FARM REPORT PROCESSING ERROR"
         )
 
         print(
@@ -1029,7 +1044,7 @@ async def handle_kobo_webhook(
     )
 
     print(
-        "       FARM REPORT PROCESS COMPLETED"
+        "        FARM REPORT PROCESS COMPLETED"
     )
 
     print(
