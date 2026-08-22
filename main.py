@@ -13,17 +13,15 @@ warnings.filterwarnings("ignore")
 
 app = FastAPI(title="Modisha's Agricultural AI Assistant")
 
-# Fetch environment variables from Render settings
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD")
 
-# Initialize Gemini Client
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 
 def send_advisory_email(to_email: str, subject: str, report_body: str):
-    """Sends the AI diagnostic report to the farmer via Gmail SMTP."""
+    print(f"--> Attempting to send email via SMTP to: {to_email}")
     msg = MIMEMultipart()
     msg["From"] = SENDER_EMAIL
     msg["To"] = to_email
@@ -34,48 +32,59 @@ def send_advisory_email(to_email: str, subject: str, report_body: str):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, to_email, msg.as_string())
-        print(f"--> Diagnostic report emailed successfully to: {to_email}")
+        print(f"--> SUCCESS: Report emailed to {to_email}")
     except Exception as e:
-        print(f"--> Failed to send email to {to_email}: {e}")
+        print(f"--> ERROR: SMTP email failed for {to_email}: {e}")
 
 
 def process_farm_report(payload: dict):
-    """
-    Extracts ONLY diagnostic data (observations, email, crop type, location/region)
-    and ignores stock/sales/inventory metrics.
-    """
-    def get_field_value(keys_to_search, default=""):
-        for key, value in payload.items():
-            for k in keys_to_search:
-                if k.lower() in key.lower() and value:
-                    return str(value).strip()
-        return default
+    print(f"--> Incoming Payload Keys: {list(payload.keys())}")
 
-    # 1. Target EXACT fields required for AI analysis
-    site_location = get_field_value(["site_location", "site", "location"], "Turfloop")
-    region = get_field_value(["region", "province"], "Limpopo")
-    vegetable = get_field_value(["vegetable", "crop", "produce"], "Crop")
-    weekly_observation = get_field_value(["weekly_observation", "observation", "field_notes", "notes"], "No observations provided.")
-    farmer_email = get_field_value(["farmer_email", "email", "contact_email"], "")
+    # Recursive search to find email regardless of Kobo field names or nested groups
+    def find_email(data):
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if "email" in k.lower() and isinstance(v, str) and "@" in v:
+                    return v.strip()
+                res = find_email(v)
+                if res:
+                    return res
+        elif isinstance(data, list):
+            for item in data:
+                res = find_email(item)
+                if res:
+                    return res
+        return ""
 
-    print(f"--> Extracted Target Data: Site='{site_location}', Region='{region}', Crop='{vegetable}', Email='{farmer_email}'")
+    farmer_email = find_email(payload)
+    
+    # Extract diagnostic fields
+    site_location = payload.get("site_location") or payload.get("location") or "Turfloop"
+    region = payload.get("region") or "Limpopo"
+    vegetable = payload.get("vegetable") or payload.get("crop") or "Crop"
+    weekly_observation = payload.get("weekly_observation") or payload.get("observations") or payload.get("field_notes") or "No field observations provided."
 
-    # 2. Extract Photo Attachment (if present)
+    print(f"--> Extracted Target Email: '{farmer_email}'")
+
+    # Photo download (failsafe)
     attachments = payload.get("_attachments", [])
     image_bytes = None
 
     if attachments:
         photo_url = attachments[0].get("download_url")
         if photo_url:
-            print("Downloading crop photo from submission...")
+            print(f"--> Downloading photo from: {photo_url}")
             try:
-                img_res = requests.get(photo_url, timeout=10)
+                img_res = requests.get(photo_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
                 if img_res.status_code == 200:
                     image_bytes = img_res.content
+                    print("--> Photo download successful!")
+                else:
+                    print(f"--> Photo status code: {img_res.status_code}")
             except Exception as e:
-                print(f"Failed to fetch photo: {e}")
+                print(f"--> Photo download exception: {e}")
 
-    # 3. Build Diagnostic Prompt (Excludes sales/inventory data)
+    # AI Prompt Construction
     prompt_text = f"""
     You are an agricultural support assistant for smallholder farmers in South Africa.
 
@@ -107,7 +116,7 @@ def process_farm_report(payload: dict):
         image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
         contents.append(image_part)
 
-    print("Generating targeted assessment with Gemini...")
+    print("--> Calling Gemini API...")
     try:
         response = client.models.generate_content(
             model="gemini-2.5-flash", 
@@ -115,15 +124,14 @@ def process_farm_report(payload: dict):
         )
         diagnostic_report = response.text
 
-        # 4. Email the report directly if an email was captured
         if farmer_email and SENDER_EMAIL and SENDER_PASSWORD:
             subject_line = f"AI Agricultural Assessment - {vegetable} ({site_location})"
             send_advisory_email(farmer_email, subject_line, diagnostic_report)
         else:
-            print(f"--> Skipping email: farmer_email='{farmer_email}' | SENDER_EMAIL={bool(SENDER_EMAIL)}")
+            print(f"--> MISSING EMAIL OR ENV VARS: farmer_email='{farmer_email}', SENDER_EMAIL={bool(SENDER_EMAIL)}, SENDER_PASSWORD={bool(SENDER_PASSWORD)}")
 
     except Exception as err:
-        print(f"Error during AI analysis: {err}")
+        print(f"--> ERROR during Gemini/Email execution: {err}")
 
 
 @app.get("/")
@@ -135,7 +143,6 @@ def home():
 async def handle_kobo_webhook(
     request: Request, background_tasks: BackgroundTasks
 ):
-    """Webhook listener that accepts Kobo submissions instantly."""
     try:
         payload = await request.json()
     except Exception:
