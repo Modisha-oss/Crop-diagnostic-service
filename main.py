@@ -1,12 +1,8 @@
 import os
-import smtplib
 import warnings
 import requests
 
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 
 from google import genai
 from google.genai import types
@@ -35,9 +31,16 @@ app = FastAPI(
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
+WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 
-SENDER_PASSWORD = os.environ.get("SENDER_PASSWORD")
+WHATSAPP_PHONE_ID = os.environ.get("WHATSAPP_PHONE_ID")
+
+WHATSAPP_VERIFY_TOKEN = os.environ.get(
+    "WHATSAPP_VERIFY_TOKEN", 
+    "modisha_agri_webhook_pass"
+)
+
+KOBO_TOKEN = os.environ.get("KOBO_TOKEN")
 
 
 # ============================================================
@@ -60,198 +63,146 @@ else:
 
 
 # ============================================================
-# EMAIL FUNCTION
+# SEND WHATSAPP MESSAGE FUNCTION
 # ============================================================
 
-def send_advisory_email(
-    to_email: str,
-    subject: str,
-    report_body: str
+def send_whatsapp_message(
+    to_phone_number: str,
+    message_text: str
 ):
 
     print()
     print("==========================================")
-    print("          EMAIL PROCESS STARTED")
+    print("        WHATSAPP OUTBOUND PROCESS STARTED")
     print("==========================================")
 
+    # Clean up phone number format (ensure no leading + or spaces)
+    clean_phone = str(to_phone_number).strip().replace("+", "").replace(" ", "")
+
     print(
-        f"Recipient: {to_email}"
+        f"Recipient: {clean_phone}"
     )
 
     print(
-        f"Sender configured: "
-        f"{bool(SENDER_EMAIL)}"
+        f"WhatsApp Token configured: "
+        f"{bool(WHATSAPP_TOKEN)}"
     )
 
     print(
-        f"Sender password configured: "
-        f"{bool(SENDER_PASSWORD)}"
+        f"WhatsApp Phone ID configured: "
+        f"{bool(WHATSAPP_PHONE_ID)}"
     )
 
 
     # --------------------------------------------------------
-    # CHECK EMAIL SETTINGS
+    # CHECK WHATSAPP CONFIGURATION
     # --------------------------------------------------------
 
-    if not SENDER_EMAIL:
+    if not WHATSAPP_TOKEN:
 
         print(
-            "ERROR: SENDER_EMAIL is missing "
+            "ERROR: WHATSAPP_TOKEN is missing "
             "from Render Environment Variables."
         )
 
         return
 
 
-    if not SENDER_PASSWORD:
+    if not WHATSAPP_PHONE_ID:
 
         print(
-            "ERROR: SENDER_PASSWORD is missing "
+            "ERROR: WHATSAPP_PHONE_ID is missing "
             "from Render Environment Variables."
         )
 
         return
 
 
-    if not to_email:
+    if not clean_phone:
 
         print(
-            "ERROR: Farmer email address is empty."
+            "ERROR: Recipient phone number is empty."
         )
 
         return
 
 
     # --------------------------------------------------------
-    # CREATE EMAIL
+    # PREPARE WHATSAPP API REQUEST
     # --------------------------------------------------------
 
-    msg = MIMEMultipart()
+    url = f"https://graph.facebook.com/v20.0/{WHATSAPP_PHONE_ID}/messages"
 
-    msg["From"] = SENDER_EMAIL
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
 
-    msg["To"] = to_email
-
-    msg["Subject"] = subject
-
-    msg.attach(
-        MIMEText(
-            report_body,
-            "plain"
-        )
-    )
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": clean_phone,
+        "type": "text",
+        "text": {
+            "body": message_text
+        }
+    }
 
 
     # --------------------------------------------------------
-    # CONNECT TO GMAIL
+    # SEND WHATSAPP MESSAGE
     # --------------------------------------------------------
 
     try:
 
         print(
-            "--> Connecting to Gmail SMTP..."
+            "--> Sending WhatsApp reply via Graph API..."
+        )
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=payload,
+            timeout=30
         )
 
 
-        with smtplib.SMTP(
-            "smtp.gmail.com",
-            587,
-            timeout=30
-        ) as server:
-
-
-            print(
-                "--> Connected to Gmail SMTP."
-            )
-
-
-            # ------------------------------------------------
-            # START TLS ENCRYPTION
-            # ------------------------------------------------
-
-            print(
-                "--> Starting TLS encryption..."
-            )
-
-            server.ehlo()
-
-            server.starttls()
-
-            server.ehlo()
-
-
-            # ------------------------------------------------
-            # LOGIN
-            # ------------------------------------------------
-
-            print(
-                "--> Logging into Gmail..."
-            )
-
-
-            server.login(
-                SENDER_EMAIL,
-                SENDER_PASSWORD
-            )
-
-
-            print(
-                "--> Gmail login successful."
-            )
-
-
-            # ------------------------------------------------
-            # SEND EMAIL
-            # ------------------------------------------------
-
-            print(
-                "--> Sending agricultural report..."
-            )
-
-
-            server.sendmail(
-                SENDER_EMAIL,
-                to_email,
-                msg.as_string()
-            )
-
+        if response.status_code == 200:
 
             print()
+            print("==========================================")
+            print("     WHATSAPP MESSAGE SENT SUCCESSFULLY!")
+            print("==========================================")
+
             print(
-                "=========================================="
+                f"Message sent to: {clean_phone}"
+            )
+
+        else:
+
+            print()
+            print("==========================================")
+            print("       WHATSAPP API ERROR RESPONSE")
+            print("==========================================")
+
+            print(
+                f"HTTP Status: {response.status_code}"
             )
 
             print(
-                "       EMAIL SENT SUCCESSFULLY!"
-            )
-
-            print(
-                "=========================================="
-            )
-
-            print(
-                f"Report sent to: {to_email}"
+                f"Response body: {response.text}"
             )
 
 
     # --------------------------------------------------------
-    # EMAIL ERROR
+    # WHATSAPP API EXCEPTION
     # --------------------------------------------------------
 
     except Exception as error:
 
         print()
-        print(
-            "=========================================="
-        )
-
-        print(
-            "              EMAIL ERROR"
-        )
-
-        print(
-            "=========================================="
-        )
+        print("==========================================")
+        print("          WHATSAPP SEND ERROR")
+        print("==========================================")
 
         print(
             "Error type:",
@@ -263,9 +214,183 @@ def send_advisory_email(
             str(error)
         )
 
+        print("==========================================")
+
+
+# ============================================================
+# DOWNLOAD META MEDIA FUNCTION
+# ============================================================
+
+def download_meta_media(media_id: str):
+
+    print()
+    print("==========================================")
+    print("       META MEDIA DOWNLOAD STARTED")
+    print("==========================================")
+
+    print(
+        f"Media ID: {media_id}"
+    )
+
+
+    if not WHATSAPP_TOKEN:
+
         print(
-            "=========================================="
+            "ERROR: WHATSAPP_TOKEN is missing for media download."
         )
+
+        return None, "image/jpeg"
+
+
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}"
+    }
+
+
+    try:
+
+        meta_url = f"https://graph.facebook.com/v20.0/{media_id}"
+
+        res = requests.get(
+            meta_url,
+            headers=headers,
+            timeout=30
+        )
+
+
+        if res.status_code != 200:
+
+            print(
+                f"--> Failed to fetch media URL. HTTP {res.status_code}"
+            )
+
+            return None, "image/jpeg"
+
+
+        media_data = res.json()
+
+        download_url = media_data.get("url")
+
+        mime_type = media_data.get("mime_type", "image/jpeg")
+
+
+        if not download_url:
+
+            print(
+                "--> Download URL not found in Meta response."
+            )
+
+            return None, mime_type
+
+
+        print(
+            f"--> Downloading media binary content..."
+        )
+
+        media_res = requests.get(
+            download_url,
+            headers=headers,
+            timeout=30
+        )
+
+
+        if media_res.status_code == 200:
+
+            print(
+                "--> Media download successful!"
+            )
+
+            return media_res.content, mime_type
+
+        else:
+
+            print(
+                f"--> Binary download failed. HTTP {media_res.status_code}"
+            )
+
+            return None, mime_type
+
+
+    except Exception as error:
+
+        print(
+            "--> Exception occurred while downloading media:"
+        )
+
+        print(
+            type(error).__name__,
+            str(error)
+        )
+
+        return None, "image/jpeg"
+
+
+# ============================================================
+# DOWNLOAD KOBO MEDIA FUNCTION
+# ============================================================
+
+def download_kobo_media(download_url: str):
+
+    print()
+    print("==========================================")
+    print("       KOBO MEDIA DOWNLOAD STARTED")
+    print("==========================================")
+
+    print(
+        f"Download URL: {download_url}"
+    )
+
+    headers = {}
+
+    if KOBO_TOKEN:
+
+        headers["Authorization"] = f"Token {KOBO_TOKEN}"
+
+
+    try:
+
+        res = requests.get(
+            download_url,
+            headers=headers,
+            timeout=30
+        )
+
+
+        if res.status_code == 200:
+
+            content_type = res.headers.get("Content-Type", "image/jpeg")
+
+            print(
+                "--> Kobo image download successful!"
+            )
+
+            print(
+                f"--> MIME type: {content_type}"
+            )
+
+            return res.content, content_type
+
+        else:
+
+            print(
+                f"--> Failed to download Kobo media. HTTP {res.status_code}"
+            )
+
+            return None, "image/jpeg"
+
+
+    except Exception as error:
+
+        print(
+            "--> Exception occurred while downloading Kobo media:"
+        )
+
+        print(
+            type(error).__name__,
+            str(error)
+        )
+
+        return None, "image/jpeg"
 
 
 # ============================================================
@@ -280,107 +405,132 @@ def process_farm_report(payload: dict):
     print("==========================================")
 
 
-    print(
-        f"Incoming Payload Keys: "
-        f"{list(payload.keys())}"
-    )
-
-
     # ========================================================
-    # FIND FARMER EMAIL
+    # DETECT SOURCE & PARSE PAYLOAD
     # ========================================================
 
-    def find_email(data):
+    source = "UNKNOWN"
 
-        if isinstance(data, dict):
+    sender_phone = ""
 
-            for key, value in data.items():
+    weekly_observation = "No text observation provided."
 
-                # ------------------------------------------------
-                # CHECK FIELD NAME FOR EMAIL
-                # ------------------------------------------------
+    image_bytes = None
 
-                if (
-                    "email" in key.lower()
-                    and isinstance(value, str)
-                    and "@" in value
-                ):
-
-                    return value.strip()
+    image_mime_type = "image/jpeg"
 
 
-                # ------------------------------------------------
-                # SEARCH NESTED DATA
-                # ------------------------------------------------
+    # --------------------------------------------------------
+    # 1. CHECK IF WHATSAPP CLOUD API PAYLOAD
+    # --------------------------------------------------------
 
-                result = find_email(value)
+    if "entry" in payload and isinstance(payload["entry"], list):
 
-                if result:
+        source = "WHATSAPP"
 
-                    return result
+        try:
 
+            entry = payload["entry"][0]
 
-        elif isinstance(data, list):
+            changes = entry["changes"][0]
 
-            for item in data:
+            value = changes["value"]
 
-                result = find_email(item)
-
-                if result:
-
-                    return result
+            messages = value.get("messages", [])
 
 
-        return ""
+            if not messages:
+
+                print(
+                    "--> WhatsApp status update received (no message body)."
+                )
+
+                return
 
 
-    farmer_email = find_email(
-        payload
-    )
+            message = messages[0]
+
+            sender_phone = message.get("from", "")
+
+            msg_type = message.get("type", "")
 
 
-    # ========================================================
-    # EXTRACT FARM INFORMATION
-    # ========================================================
+            if msg_type == "text":
 
-    site_location = (
+                weekly_observation = message.get("text", {}).get("body", "")
 
-        payload.get("site_location")
+            elif msg_type == "image":
 
-        or payload.get("location")
+                image_obj = message.get("image", {})
 
-        or "Turfloop"
-    )
+                weekly_observation = image_obj.get("caption", "Uploaded crop image.")
 
-
-    region = (
-
-        payload.get("region")
-
-        or "Limpopo"
-    )
+                media_id = image_obj.get("id")
 
 
-    vegetable = (
+                if media_id:
 
-        payload.get("vegetable")
-
-        or payload.get("crop")
-
-        or "Crop"
-    )
+                    image_bytes, image_mime_type = download_meta_media(media_id)
 
 
-    weekly_observation = (
+        except (KeyError, IndexError) as parse_error:
 
-        payload.get("weekly_observation")
+            print(
+                "--> WhatsApp parsing error:",
+                str(parse_error)
+            )
 
-        or payload.get("observations")
+            return
 
-        or payload.get("field_notes")
 
-        or "No field observations provided."
-    )
+    # --------------------------------------------------------
+    # 2. CHECK IF KOBOTOOLBOX PAYLOAD
+    # --------------------------------------------------------
+
+    else:
+
+        source = "KOBO"
+
+        # Dynamically search for phone number field in Kobo payload
+        for key, val in payload.items():
+
+            if "phone" in key.lower() or "mobile" in key.lower() or "contact" in key.lower():
+
+                if val:
+
+                    sender_phone = str(val)
+
+                    break
+
+
+        # Dynamically search for observation text
+        for key, val in payload.items():
+
+            if "observation" in key.lower() or "note" in key.lower() or "issue" in key.lower() or "description" in key.lower():
+
+                if val and isinstance(val, str):
+
+                    weekly_observation = val
+
+                    break
+
+
+        # Extract image attachments from Kobo
+        attachments = payload.get("_attachments", [])
+
+        if attachments and isinstance(attachments, list):
+
+            for attachment in attachments:
+
+                download_url = attachment.get("download_url")
+
+                if download_url:
+
+                    image_bytes, image_mime_type = download_kobo_media(download_url)
+
+                    if image_bytes:
+
+                        break
 
 
     # ========================================================
@@ -393,15 +543,11 @@ def process_farm_report(payload: dict):
     )
 
     print(
-        f"Site Location: {site_location}"
+        f"Source: {source}"
     )
 
     print(
-        f"Region: {region}"
-    )
-
-    print(
-        f"Vegetable/Crop: {vegetable}"
+        f"Sender Phone: {sender_phone}"
     )
 
     print(
@@ -409,157 +555,12 @@ def process_farm_report(payload: dict):
     )
 
     print(
-        f"Extracted Farmer Email: '{farmer_email}'"
+        f"Has Image Bytes: {bool(image_bytes)}"
     )
 
     print(
         "------------------------------------------"
     )
-
-
-    # ========================================================
-    # DOWNLOAD KOBO IMAGE
-    # ========================================================
-
-    attachments = payload.get(
-        "_attachments",
-        []
-    )
-
-    image_bytes = None
-
-    image_mime_type = "image/jpeg"
-
-
-    if attachments:
-
-        print(
-            f"--> Number of attachments: "
-            f"{len(attachments)}"
-        )
-
-
-        # ----------------------------------------------------
-        # FIRST ATTACHMENT
-        # ----------------------------------------------------
-
-        first_attachment = attachments[0]
-
-        photo_url = (
-            first_attachment.get(
-                "download_url"
-            )
-        )
-
-
-        if photo_url:
-
-            print(
-                f"--> Downloading photo from: "
-                f"{photo_url}"
-            )
-
-
-            try:
-
-                img_res = requests.get(
-
-                    photo_url,
-
-                    headers={
-                        "User-Agent":
-                        "Mozilla/5.0"
-                    },
-
-                    timeout=30
-                )
-
-
-                # ------------------------------------------------
-                # CHECK DOWNLOAD
-                # ------------------------------------------------
-
-                if img_res.status_code == 200:
-
-                    image_bytes = (
-                        img_res.content
-                    )
-
-
-                    # --------------------------------------------
-                    # DETECT IMAGE TYPE
-                    # --------------------------------------------
-
-                    content_type = (
-                        img_res.headers.get(
-                            "Content-Type",
-                            ""
-                        )
-                    )
-
-
-                    if content_type.startswith(
-                        "image/"
-                    ):
-
-                        image_mime_type = (
-                            content_type
-                        )
-
-
-                    print(
-                        "--> Photo download successful!"
-                    )
-
-                    print(
-                        f"--> Image type: "
-                        f"{image_mime_type}"
-                    )
-
-                    print(
-                        f"--> Image size: "
-                        f"{len(image_bytes)} bytes"
-                    )
-
-
-                else:
-
-                    print(
-                        "--> Photo download failed."
-                    )
-
-                    print(
-                        f"--> HTTP status: "
-                        f"{img_res.status_code}"
-                    )
-
-
-            except Exception as error:
-
-                print(
-                    "--> Photo download exception:"
-                )
-
-                print(
-                    type(error).__name__,
-                    str(error)
-                )
-
-
-        else:
-
-            print(
-                "--> Attachment found, "
-                "but no download_url was provided."
-            )
-
-
-    else:
-
-        print(
-            "--> No crop photograph "
-            "was found in this submission."
-        )
 
 
     # ========================================================
@@ -586,20 +587,6 @@ helping smallholder farmers in South Africa.
 
 Analyze the following farm report and,
 if provided, the attached crop image.
-
-SITE DETAILS:
-
-Site Location:
-{site_location}
-
-Region:
-{region}
-
-
-CROP DETAILS:
-
-Crop:
-{vegetable}
 
 
 FIELD OBSERVATION:
@@ -675,23 +662,18 @@ or inventory analysis.
 
         try:
 
-            image_part = (
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type=image_mime_type
-                )
+            image_part = types.Part.from_bytes(
+                data=image_bytes,
+                mime_type=image_mime_type
             )
-
 
             contents.append(
                 image_part
             )
 
-
             print(
                 "--> Crop image added to Gemini analysis."
             )
-
 
         except Exception as error:
 
@@ -759,7 +741,7 @@ or inventory analysis.
         )
 
         print(
-            "        AI REPORT GENERATED"
+            "         AI REPORT GENERATED"
         )
 
         print(
@@ -776,39 +758,21 @@ or inventory analysis.
 
 
         # ====================================================
-        # SEND EMAIL
+        # SEND WHATSAPP MESSAGE TO FARMER
         # ====================================================
 
-        if farmer_email:
+        if sender_phone:
 
             print()
 
             print(
-                "--> Farmer email detected."
+                f"--> Valid phone number detected ({sender_phone}). Dispatching WhatsApp report..."
             )
 
-
-            subject_line = (
-
-                "AI Agricultural Assessment - "
-
-                f"{vegetable} "
-
-                f"({site_location})"
-
-            )
-
-
-            send_advisory_email(
-
-                farmer_email,
-
-                subject_line,
-
+            send_whatsapp_message(
+                sender_phone,
                 diagnostic_report
-
             )
-
 
         else:
 
@@ -819,16 +783,11 @@ or inventory analysis.
             )
 
             print(
-                "        NO FARMER EMAIL FOUND"
+                "  NO SENDER PHONE FOUND IN REPORT SUBMISSION"
             )
 
             print(
                 "=========================================="
-            )
-
-            print(
-                "The Kobo submission did not contain "
-                "a usable email address."
             )
 
 
@@ -899,27 +858,73 @@ def health():
         "gemini_configured":
         bool(GEMINI_API_KEY),
 
-        "email_configured":
+        "whatsapp_configured":
         bool(
-            SENDER_EMAIL
+            WHATSAPP_TOKEN
             and
-            SENDER_PASSWORD
-        )
+            WHATSAPP_PHONE_ID
+        ),
+
+        "kobo_configured":
+        bool(KOBO_TOKEN)
 
     }
 
 
 # ============================================================
-# KOBO WEBHOOK
+# WHATSAPP VERIFICATION WEBHOOK (GET)
 # ============================================================
 
+@app.get("/webhook/whatsapp")
+@app.get("/webhook")
+async def verify_whatsapp_webhook(
+    hub_mode: str = Query(None, alias="hub.mode"),
+    hub_challenge: str = Query(None, alias="hub.challenge"),
+    hub_verify_token: str = Query(None, alias="hub.verify_token"),
+):
+
+    print()
+    print("==========================================")
+    print("     WHATSAPP WEBHOOK VERIFICATION REQUEST")
+    print("==========================================")
+
+
+    if hub_mode == "subscribe" and hub_verify_token == WHATSAPP_VERIFY_TOKEN:
+
+        print(
+            "--> Verification successful! Returning hub.challenge..."
+        )
+
+        return Response(
+            content=hub_challenge, 
+            media_type="text/plain"
+        )
+
+
+    print(
+        "--> Verification failed: token mismatch or invalid mode."
+    )
+
+    raise HTTPException(
+        status_code=403, 
+        detail="Verification failed"
+    )
+
+
+# ============================================================
+# UNIFIED INBOUND WEBHOOK (POST)
+# Accepts both KoboToolbox and WhatsApp Submissions
+# ============================================================
+
+@app.post("/webhook/kobo")
+@app.post("/webhook/whatsapp")
 @app.post("/webhook")
-async def handle_kobo_webhook(
+async def handle_inbound_webhook(
     request: Request
 ):
 
     # ========================================================
-    # RECEIVE KOBO DATA
+    # RECEIVE DATA
     # ========================================================
 
     try:
@@ -938,7 +943,7 @@ async def handle_kobo_webhook(
 
 
     # ========================================================
-    # CONFIRM KOBO SUBMISSION
+    # CONFIRM SUBMISSION
     # ========================================================
 
     print()
@@ -948,42 +953,17 @@ async def handle_kobo_webhook(
     )
 
     print(
-        "        KOBO SUBMISSION RECEIVED"
+        "       INBOUND SUBMISSION RECEIVED"
     )
 
     print(
         "=========================================="
-    )
-
-
-    # ========================================================
-    # SHOW PAYLOAD KEYS
-    # ========================================================
-
-    print(
-        f"Payload keys: "
-        f"{list(payload.keys())}"
     )
 
 
     # ========================================================
     # START FARM REPORT PROCESS
     # ========================================================
-
-    print()
-
-    print(
-        "=========================================="
-    )
-
-    print(
-        "        STARTING FARM REPORT PROCESS"
-    )
-
-    print(
-        "=========================================="
-    )
-
 
     try:
 
@@ -1037,27 +1017,12 @@ async def handle_kobo_webhook(
     # SUCCESS RESPONSE
     # ========================================================
 
-    print()
-
-    print(
-        "=========================================="
-    )
-
-    print(
-        "        FARM REPORT PROCESS COMPLETED"
-    )
-
-    print(
-        "=========================================="
-    )
-
-
     return {
 
         "status":
         "success",
 
         "message":
-        "Farm report analysed successfully."
+        "Farm report processed successfully."
 
     }
