@@ -36,7 +36,10 @@ KOBO_TOKEN = os.environ.get("KOBO_TOKEN")
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
 
-SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+SENDER_EMAIL = os.environ.get(
+    "SENDER_EMAIL", 
+    "Modisha Crop Diagnostics <reports@modisha-agri.co.za>"
+)
 
 
 # ============================================================
@@ -152,7 +155,7 @@ def send_email_message(
 
         print()
         print("==========================================")
-        print("        EMAIL DISPATCH ERROR")
+        print("         EMAIL DISPATCH ERROR")
         print("==========================================")
 
         print(
@@ -244,7 +247,7 @@ def process_farm_report(payload: dict):
 
     print()
     print("==========================================")
-    print("       NEW FARM REPORT RECEIVED")
+    print("        NEW FARM REPORT RECEIVED")
     print("==========================================")
 
     sender_email = ""
@@ -393,7 +396,7 @@ Include:
 
         print()
         print("==========================================")
-        print("         AI REPORT GENERATED")
+        print("          AI REPORT GENERATED")
         print("==========================================")
         print(diagnostic_report)
         print("==========================================")
