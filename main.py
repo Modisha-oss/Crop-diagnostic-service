@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore")
 
 app = FastAPI(
     title="Modisha's Agricultural AI Assistant (Email)",
-    version="1.0"
+    version="1.2"
 )
 
 
@@ -78,6 +78,8 @@ else:
 
 def send_email_message(
     to_email: str,
+    site_name: str,
+    region_location: str,
     diagnostic_report: str
 ):
 
@@ -125,18 +127,25 @@ def send_email_message(
             "--> Dispatching email via Resend..."
         )
 
-        # Convert markdown formatted report to simple HTML lines
+        # Convert markdown formatted report to styled HTML lines
         html_content = f"""
-        <h2>Agricultural Diagnostic Report</h2>
-        <div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6;">
-            {diagnostic_report.replace('\n', '<br>')}
+        <div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333333;">
+            <h2 style="color: #2e7d32; margin-bottom: 5px;">Agricultural Diagnostic Report</h2>
+            <div style="background-color: #f1f8e9; padding: 12px; border-left: 4px solid #2e7d32; margin-bottom: 20px;">
+                <p style="margin: 0; font-weight: bold;">Site / Farm Name: <span style="font-weight: normal;">{site_name}</span></p>
+                <p style="margin: 4px 0 0 0; font-weight: bold;">Region / Location: <span style="font-weight: normal;">{region_location}</span></p>
+            </div>
+            <hr style="border: 0; border-top: 1px solid #cccccc; margin-bottom: 20px;">
+            <div>
+                {diagnostic_report.replace('\n', '<br>')}
+            </div>
         </div>
         """
 
         response = resend.Emails.send({
             "from": SENDER_EMAIL,
             "to": [clean_email],
-            "subject": "Your Crop Assessment Report",
+            "subject": f"Crop Assessment Report - {site_name} ({region_location})",
             "html": html_content
         })
 
@@ -252,15 +261,17 @@ def process_farm_report(payload: dict):
 
     sender_email = ""
 
+    site_name = "Main Production Site"
+
+    region_location = "Not specified"
+
     weekly_observation = "No text observation provided."
 
-    image_bytes = None
-
-    image_mime_type = "image/jpeg"
+    image_parts = []
 
 
     # --------------------------------------------------------
-    # EXTRACT EMAIL & OBSERVATION FROM KOBO PAYLOAD
+    # EXTRACT DATA FIELDS FROM KOBO PAYLOAD
     # --------------------------------------------------------
 
     for key, val in payload.items():
@@ -276,6 +287,28 @@ def process_farm_report(payload: dict):
 
     for key, val in payload.items():
 
+        if any(site_key in key.lower() for site_key in ["site", "farm", "plot", "field_name"]):
+
+            if val and isinstance(val, str):
+
+                site_name = val
+
+                break
+
+
+    for key, val in payload.items():
+
+        if any(region_key in key.lower() for region_key in ["region", "province", "location", "district", "area", "town"]):
+
+            if val and isinstance(val, str):
+
+                region_location = val
+
+                break
+
+
+    for key, val in payload.items():
+
         if "observation" in key.lower() or "note" in key.lower() or "issue" in key.lower() or "description" in key.lower():
 
             if val and isinstance(val, str):
@@ -285,6 +318,20 @@ def process_farm_report(payload: dict):
                 break
 
 
+    # Extract GPS Geolocation if region text key is not explicitly named
+    if region_location == "Not specified" and "_geolocation" in payload:
+
+        geo = payload.get("_geolocation")
+
+        if geo and isinstance(geo, list) and len(geo) >= 2:
+
+            region_location = f"GPS: {geo[0]}, {geo[1]}"
+
+
+    # --------------------------------------------------------
+    # EXTRACT & DOWNLOAD MULTIPLE IMAGE ATTACHMENTS
+    # --------------------------------------------------------
+
     attachments = payload.get("_attachments", [])
 
     if attachments and isinstance(attachments, list):
@@ -293,13 +340,28 @@ def process_farm_report(payload: dict):
 
             download_url = attachment.get("download_url")
 
-            if download_url:
+            mimetype = attachment.get("mimetype", "image/")
 
-                image_bytes, image_mime_type = download_kobo_media(download_url)
+            if download_url and "image" in mimetype:
 
-                if image_bytes:
+                img_bytes, img_mime = download_kobo_media(download_url)
 
-                    break
+                if img_bytes:
+
+                    try:
+
+                        part = types.Part.from_bytes(
+                            data=img_bytes,
+                            mime_type=img_mime
+                        )
+
+                        image_parts.append(part)
+
+                        print(f"--> Successfully prepared image attachment {len(image_parts)}")
+
+                    except Exception as error:
+
+                        print("--> Failed to format image part:", str(error))
 
 
     # --------------------------------------------------------
@@ -309,8 +371,10 @@ def process_farm_report(payload: dict):
     print()
     print("------------------------------------------")
     print(f"Sender Email: {sender_email}")
+    print(f"Site Name: {site_name}")
+    print(f"Region/Location: {region_location}")
     print(f"Observation: {weekly_observation}")
-    print(f"Has Image Bytes: {bool(image_bytes)}")
+    print(f"Total Images Attached: {len(image_parts)}")
     print("------------------------------------------")
 
 
@@ -327,27 +391,32 @@ def process_farm_report(payload: dict):
 
     prompt_text = f"""
 
-You are an agricultural support assistant helping smallholder farmers in South Africa.
+You are an agricultural expert helping smallholder farmers in South Africa.
 
-Analyze the following farm report and, if provided, the attached crop image.
+Analyze the following farm report, location context, and all attached crop images.
 
 
-FIELD OBSERVATION:
+SITE / FARM NAME: {site_name}
 
-{weekly_observation}
+FARM LOCATION / REGION: {region_location}
+
+FIELD OBSERVATION: {weekly_observation}
 
 
 TASK:
 
-Provide a comprehensive agricultural assessment.
+Provide a comprehensive agricultural assessment. 
+
+Reference the site name ({site_name}) and tailor your diagnostic and climate-related advice specifically to the regional conditions of {region_location} in South Africa.
+
 
 Include:
 
-1. Primary Issue / Pests / Diseases identified
+1. Primary Issue / Pests / Diseases identified across the attached photos and observation
 
 2. Severity Rating (Mild, Moderate, or Severe)
 
-3. Detailed Practical Actions for the Farmer
+3. Region-Specific Advisory & Practical Actions for the Farmer at {site_name}
 
 4. Preventative Measures & Next Week Monitoring
 
@@ -360,29 +429,12 @@ Include:
     # PREPARE & CALL GEMINI
     # --------------------------------------------------------
 
-    contents = [prompt_text]
-
-    if image_bytes:
-
-        try:
-
-            image_part = types.Part.from_bytes(
-                data=image_bytes,
-                mime_type=image_mime_type
-            )
-
-            contents.append(image_part)
-
-            print("--> Crop image attached for AI analysis.")
-
-        except Exception as error:
-
-            print("--> Could not attach image:", str(error))
+    contents = [prompt_text] + image_parts
 
 
     try:
 
-        print("--> Calling Gemini API...")
+        print("--> Calling Gemini API with multi-image, site, and regional context...")
 
         response = client.models.generate_content(
             model="gemini-3.6-flash",
@@ -410,6 +462,8 @@ Include:
 
             send_email_message(
                 sender_email,
+                site_name,
+                region_location,
                 diagnostic_report
             )
 
@@ -432,7 +486,7 @@ def home():
 
     return {
         "status": "Live",
-        "service": "Agricultural AI Assistant (Kobo to Email)"
+        "service": "Agricultural AI Assistant (Multi-Image, Site & Regional Kobo to Email)"
     }
 
 
