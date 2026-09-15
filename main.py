@@ -296,7 +296,7 @@ def generate_ai_report_with_fallback(contents: list) -> str:
 
     models_to_try = [
         "gemini-3.6-flash",
-        "gemini-1.5-flash"
+        "gemini-2.5-flash"
     ]
 
     for model_name in models_to_try:
@@ -374,14 +374,38 @@ def process_farm_report(payload: dict):
                 break
 
 
-    # Extract Farmer Email
+    # --------------------------------------------------------
+    # ROBUST EMAIL EXTRACTION (PULLDATA / CSV FRIENDLY)
+    # --------------------------------------------------------
+
+    # Pass 1: Targeted Key Scan
     for key, val in payload.items():
 
-        if "email" in key.lower() or "mail" in key.lower():
+        if any(email_key in key.lower() for email_key in ["email", "mail", "farmer_email"]):
 
-            if val and "@" in str(val):
+            val_str = str(val).strip() if val else ""
 
-                sender_email = str(val)
+            if "@" in val_str and "." in val_str and " " not in val_str:
+
+                sender_email = val_str
+
+                print(f"--> Extracted email from key [{key}]: {sender_email}")
+
+                break
+
+
+    # Pass 2: Fallback Full Payload Value Scan (For nested CSV / pulldata fields)
+    if not sender_email:
+
+        for key, val in payload.items():
+
+            val_str = str(val).strip() if val else ""
+
+            if "@" in val_str and "." in val_str and " " not in val_str:
+
+                sender_email = val_str
+
+                print(f"--> Extracted email via value inspection from key [{key}]: {sender_email}")
 
                 break
 
@@ -637,4 +661,5 @@ async def handle_kobo_webhook(request: Request):
     return {
         "status": "success",
         "message": "Kobo submission processed and Email dispatched."
+    }
     }
