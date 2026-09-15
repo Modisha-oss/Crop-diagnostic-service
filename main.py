@@ -2,6 +2,8 @@ import os
 import warnings
 import requests
 import resend
+import markdown
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from fastapi import FastAPI, HTTPException, Request
 
@@ -22,7 +24,7 @@ warnings.filterwarnings("ignore")
 
 app = FastAPI(
     title="Modisha's Agricultural AI Assistant (Email)",
-    version="1.2"
+    version="1.3"
 )
 
 
@@ -73,11 +75,36 @@ else:
 
 
 # ============================================================
-# SEND EMAIL FUNCTION (RESEND)
+# SEND EMAIL FUNCTION WITH TENACITY RETRY LOGIC
 # ============================================================
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=2, min=4, max=30),
+    retry=retry_if_exception_type(Exception),
+    reraise=True
+)
+def execute_resend_email_dispatch(
+    clean_email: str,
+    subject: str,
+    html_content: str
+):
+
+    print("--> Attempting email dispatch via Resend...")
+
+    response = resend.Emails.send({
+        "from": SENDER_EMAIL,
+        "to": [clean_email],
+        "subject": subject,
+        "html": html_content
+    })
+
+    return response
+
 
 def send_email_message(
     to_email: str,
+    farmer_name: str,
     site_name: str,
     region_location: str,
     diagnostic_report: str
@@ -85,13 +112,17 @@ def send_email_message(
 
     print()
     print("==========================================")
-    print("         EMAIL PROCESS STARTED")
+    print("          EMAIL PROCESS STARTED")
     print("==========================================")
 
     clean_email = str(to_email).strip().lower()
 
     print(
         f"Recipient Email: {clean_email}"
+    )
+
+    print(
+        f"Farmer Name: {farmer_name}"
     )
 
     print(
@@ -117,38 +148,47 @@ def send_email_message(
         return
 
 
+    # Convert raw markdown report to valid HTML
+    report_html = markdown.markdown(diagnostic_report)
+
+
     # --------------------------------------------------------
-    # SEND EMAIL VIA RESEND API
+    # PERSONALIZED HTML EMAIL TEMPLATE
     # --------------------------------------------------------
+
+    html_content = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 650px; font-size: 14px; line-height: 1.6; color: #333333; border: 1px solid #e0e0e0; border-radius: 8px; padding: 24px; margin: 0 auto;">
+        
+        <h2 style="color: #2e7d32; margin-top: 0;">Good day, {farmer_name} 👋</h2>
+        
+        <p>Please find your automated agricultural diagnostic report for <strong>{site_name}</strong> ({region_location}) below:</p>
+        
+        <div style="background-color: #f1f8e9; padding: 16px; border-left: 4px solid #2e7d32; margin: 20px 0; border-radius: 4px;">
+            {report_html}
+        </div>
+
+        <p style="font-size: 0.85em; color: #666666; margin-top: 20px;">
+            <em>This report was generated automatically using KoboToolbox field telemetry and AI diagnostic analysis.</em>
+        </p>
+        
+        <hr style="border: 0; border-top: 1px solid #cccccc; margin: 20px 0;">
+        
+        <p style="margin-bottom: 0;">
+            Kind regards,<br>
+            <strong>Agricultural Extension & Field Diagnostics Team</strong>
+        </p>
+
+    </div>
+    """
+
 
     try:
 
-        print(
-            "--> Dispatching email via Resend..."
+        response = execute_resend_email_dispatch(
+            clean_email=clean_email,
+            subject=f"Agricultural Assessment Report - {site_name}",
+            html_content=html_content
         )
-
-        # Convert markdown formatted report to styled HTML lines
-        html_content = f"""
-        <div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333333;">
-            <h2 style="color: #2e7d32; margin-bottom: 5px;">Agricultural Diagnostic Report</h2>
-            <div style="background-color: #f1f8e9; padding: 12px; border-left: 4px solid #2e7d32; margin-bottom: 20px;">
-                <p style="margin: 0; font-weight: bold;">Site / Farm Name: <span style="font-weight: normal;">{site_name}</span></p>
-                <p style="margin: 4px 0 0 0; font-weight: bold;">Region / Location: <span style="font-weight: normal;">{region_location}</span></p>
-            </div>
-            <hr style="border: 0; border-top: 1px solid #cccccc; margin-bottom: 20px;">
-            <div>
-                {diagnostic_report.replace('\n', '<br>')}
-            </div>
-        </div>
-        """
-
-        response = resend.Emails.send({
-            "from": SENDER_EMAIL,
-            "to": [clean_email],
-            "subject": f"Crop Assessment Report - {site_name} ({region_location})",
-            "html": html_content
-        })
-
 
         print()
         print("==========================================")
@@ -164,7 +204,7 @@ def send_email_message(
 
         print()
         print("==========================================")
-        print("         EMAIL DISPATCH ERROR")
+        print("          EMAIL DISPATCH ERROR")
         print("==========================================")
 
         print(
@@ -249,6 +289,46 @@ def download_kobo_media(download_url: str):
 
 
 # ============================================================
+# CALL GEMINI WITH MODEL FALLBACK & RETRIES
+# ============================================================
+
+def generate_ai_report_with_fallback(contents: list) -> str:
+
+    models_to_try = [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash"
+    ]
+
+    for model_name in models_to_try:
+
+        try:
+
+            print(f"--> Calling Gemini API using model [{model_name}]...")
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents
+            )
+
+            if response and response.text:
+
+                print(f"--> AI Report generation successful using [{model_name}].")
+
+                return response.text
+
+        except Exception as error:
+
+            print(f"WARNING: Model [{model_name}] failed or experienced high traffic load.")
+
+            print("Error details:", str(error))
+
+            print("--> Switching to fallback model...")
+
+
+    return "Error: Unable to generate diagnostic assessment due to temporary high system load across AI models."
+
+
+# ============================================================
 # PROCESS FARM REPORT
 # ============================================================
 
@@ -259,11 +339,19 @@ def process_farm_report(payload: dict):
     print("        NEW FARM REPORT RECEIVED")
     print("==========================================")
 
+    farmer_name = "Valued Farmer"
+
     sender_email = ""
 
     site_name = "Main Production Site"
 
     region_location = "Not specified"
+
+    date_planted = "Not specified"
+
+    soil_type = "Not specified"
+
+    seedling_type = "Not specified"
 
     weekly_observation = "No text observation provided."
 
@@ -274,6 +362,19 @@ def process_farm_report(payload: dict):
     # EXTRACT DATA FIELDS FROM KOBO PAYLOAD
     # --------------------------------------------------------
 
+    # Extract Farmer Name
+    for key, val in payload.items():
+
+        if any(name_key in key.lower() for name_key in ["farmer_name", "farmers_name", "farmer", "name"]):
+
+            if val and isinstance(val, str):
+
+                farmer_name = val
+
+                break
+
+
+    # Extract Farmer Email
     for key, val in payload.items():
 
         if "email" in key.lower() or "mail" in key.lower():
@@ -285,6 +386,7 @@ def process_farm_report(payload: dict):
                 break
 
 
+    # Extract Site Location
     for key, val in payload.items():
 
         if any(site_key in key.lower() for site_key in ["site", "farm", "plot", "field_name"]):
@@ -296,6 +398,7 @@ def process_farm_report(payload: dict):
                 break
 
 
+    # Extract Region / Location
     for key, val in payload.items():
 
         if any(region_key in key.lower() for region_key in ["region", "province", "location", "district", "area", "town"]):
@@ -307,6 +410,43 @@ def process_farm_report(payload: dict):
                 break
 
 
+    # Extract Date Planted
+    for key, val in payload.items():
+
+        if "planted" in key.lower() or "plant_date" in key.lower() or "date" in key.lower():
+
+            if val and isinstance(val, str):
+
+                date_planted = val
+
+                break
+
+
+    # Extract Soil Type
+    for key, val in payload.items():
+
+        if "soil" in key.lower():
+
+            if val and isinstance(val, str):
+
+                soil_type = val
+
+                break
+
+
+    # Extract Seedling / Crop Type
+    for key, val in payload.items():
+
+        if "seedling" in key.lower() or "crop" in key.lower() or "variety" in key.lower():
+
+            if val and isinstance(val, str):
+
+                seedling_type = val
+
+                break
+
+
+    # Extract Weekly Observation / Issue Notes
     for key, val in payload.items():
 
         if "observation" in key.lower() or "note" in key.lower() or "issue" in key.lower() or "description" in key.lower():
@@ -318,7 +458,7 @@ def process_farm_report(payload: dict):
                 break
 
 
-    # Extract GPS Geolocation if region text key is not explicitly named
+    # Fallback GPS Geolocation
     if region_location == "Not specified" and "_geolocation" in payload:
 
         geo = payload.get("_geolocation")
@@ -370,9 +510,13 @@ def process_farm_report(payload: dict):
 
     print()
     print("------------------------------------------")
+    print(f"Farmer Name: {farmer_name}")
     print(f"Sender Email: {sender_email}")
     print(f"Site Name: {site_name}")
     print(f"Region/Location: {region_location}")
+    print(f"Date Planted: {date_planted}")
+    print(f"Soil Type: {soil_type}")
+    print(f"Seedling/Crop Type: {seedling_type}")
     print(f"Observation: {weekly_observation}")
     print(f"Total Images Attached: {len(image_parts)}")
     print("------------------------------------------")
@@ -386,95 +530,69 @@ def process_farm_report(payload: dict):
 
 
     # --------------------------------------------------------
-    # CREATE AI PROMPT
+    # CREATE AI PROMPT WITH FULL AGRONOMIC METADATA
     # --------------------------------------------------------
 
     prompt_text = f"""
+You are an expert agricultural specialist assisting smallholder farmers in South Africa.
 
-You are an agricultural expert helping smallholder farmers in South Africa.
+Analyze the provided crop data, soil properties, planting metadata, location context, and attached field images.
 
-Analyze the following farm report, location context, and all attached crop images.
-
-
+FARMER NAME: {farmer_name}
 SITE / FARM NAME: {site_name}
-
-FARM LOCATION / REGION: {region_location}
-
-FIELD OBSERVATION: {weekly_observation}
-
+REGION / LOCATION: {region_location}
+DATE PLANTED: {date_planted}
+SOIL TYPE: {soil_type}
+SEEDLING / CROP VARIETY: {seedling_type}
+FIELD OBSERVATION / ISSUE NOTES: {weekly_observation}
 
 TASK:
+Provide a comprehensive, professional diagnostic assessment. Reference the site ({site_name}) and tailor your agronomic, soil, and pest management advice to the specific crop stage (planted on {date_planted}), soil characteristics ({soil_type}), and regional environment ({region_location}).
 
-Provide a comprehensive agricultural assessment. 
-
-Reference the site name ({site_name}) and tailor your diagnostic and climate-related advice specifically to the regional conditions of {region_location} in South Africa.
-
-
-Include:
-
-1. Primary Issue / Pests / Diseases identified across the attached photos and observation
-
-2. Severity Rating (Mild, Moderate, or Severe)
-
-3. Region-Specific Advisory & Practical Actions for the Farmer at {site_name}
-
-4. Preventative Measures & Next Week Monitoring
-
-5. Confidence Level
-
+Structure your report into the following sections:
+1. **Primary Diagnosis**: Identify any diseases, pests, nutrient deficiencies, or environmental stresses visible in the images and described in the notes.
+2. **Crop Stage & Soil Evaluation**: Evaluate how the soil type ({soil_type}) and growth stage (since {date_planted}) impact current crop health.
+3. **Severity Rating**: Indicate if the issue is Mild, Moderate, or Severe.
+4. **Immediate Action Steps**: 2-3 clear, practical actions the farmer can take immediately at {site_name}.
+5. **Preventative Measures & Next Week Monitoring**: Long-term actions for sustainable management.
+6. **Confidence Level**: High, Medium, or Low.
 """
 
 
     # --------------------------------------------------------
-    # PREPARE & CALL GEMINI
+    # CALL GEMINI WITH MULTI-MODEL FALLBACK
     # --------------------------------------------------------
 
     contents = [prompt_text] + image_parts
 
+    diagnostic_report = generate_ai_report_with_fallback(contents)
 
-    try:
 
-        print("--> Calling Gemini API with multi-image, site, and regional context...")
+    print()
+    print("==========================================")
+    print("          AI REPORT GENERATED")
+    print("==========================================")
+    print(diagnostic_report)
+    print("==========================================")
 
-        response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=contents
+
+    # --------------------------------------------------------
+    # DISPATCH REPORT VIA EMAIL
+    # --------------------------------------------------------
+
+    if sender_email:
+
+        send_email_message(
+            sender_email,
+            farmer_name,
+            site_name,
+            region_location,
+            diagnostic_report
         )
 
-        diagnostic_report = (
-            response.text if response.text else "Gemini did not return an assessment."
-        )
+    else:
 
-
-        print()
-        print("==========================================")
-        print("          AI REPORT GENERATED")
-        print("==========================================")
-        print(diagnostic_report)
-        print("==========================================")
-
-
-        # ----------------------------------------------------
-        # DISPATCH REPORT VIA EMAIL
-        # ----------------------------------------------------
-
-        if sender_email:
-
-            send_email_message(
-                sender_email,
-                site_name,
-                region_location,
-                diagnostic_report
-            )
-
-        else:
-
-            print("WARNING: No email address extracted from Kobo submission.")
-
-
-    except Exception as error:
-
-        print("ERROR: Gemini processing failed:", str(error))
+        print("WARNING: No email address extracted from Kobo submission.")
 
 
 # ============================================================
@@ -486,7 +604,7 @@ def home():
 
     return {
         "status": "Live",
-        "service": "Agricultural AI Assistant (Multi-Image, Site & Regional Kobo to Email)"
+        "service": "Agricultural AI Assistant (Multi-Image, Metadata Lookup & Automatic Email Dispatch)"
     }
 
 
