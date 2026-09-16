@@ -145,7 +145,7 @@ def send_email_message(
         response = resend.Emails.send({
             "from": SENDER_EMAIL,
             "to": [clean_email],
-            "subject": f"Crop Assessment Report - {site_name} ({region_location})",
+            "subject": f"Crop Assessment Report - {site_name} ({region})",
             "html": html_content
         })
 
@@ -372,7 +372,10 @@ def process_farm_report(payload: dict):
     print("------------------------------------------")
     print(f"Sender Email: {sender_email}")
     print(f"Site Name: {site_name}")
-    print(f"Region/Location: {region_location}")
+    print(f"Region/Location: {region}")
+    print(f"Date Planted: {date_planted}")
+    print(f"Soil Type: {soil_type}")
+    print(f"Seedling/Crop Type: {seedling_crop_type}")
     print(f"Observation: {weekly_observation}")
     print(f"Total Images Attached: {len(image_parts)}")
     print("------------------------------------------")
@@ -398,7 +401,13 @@ Analyze the following farm report, location context, and all attached crop image
 
 SITE / FARM NAME: {site_name}
 
-FARM LOCATION / REGION: {region_location}
+DATE PLANTED: {date_planted}
+
+SOIL TYPE: {soil_type}
+
+SEEDLING/CROP TYPE: {seedling_crop_type)
+
+FARM LOCATION / REGION: {region}
 
 FIELD OBSERVATION: {weekly_observation}
 
@@ -463,7 +472,9 @@ Include:
             send_email_message(
                 sender_email,
                 site_name,
-                region_location,
+                region,
+                soil_type,
+                seedling_crop_type,
                 diagnostic_report
             )
 
