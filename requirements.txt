@@ -3,5 +3,3 @@ uvicorn
 requests
 google-genai
 resend
-tenacity
-markdown
