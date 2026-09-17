@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore")
 
 app = FastAPI(
     title="Modisha's Agricultural AI Assistant (Email)",
-    version="1.2"
+    version="1.3"
 )
 
 
@@ -70,6 +70,33 @@ else:
     print(
         "WARNING: RESEND_API_KEY is missing."
     )
+
+
+# ============================================================
+# HELPER: FLATTEN NESTED KOBO PAYLOAD
+# ============================================================
+
+def flatten_kobo_payload(payload_dict, parent_key=''):
+    """
+    Recursively flattens KoboToolbox payloads (including nested groups like site_issues)
+    so field names like 'site_issues/farmer_email' or nested dicts can be matched reliably.
+    """
+    items = []
+    if isinstance(payload_dict, dict):
+        for k, v in payload_dict.items():
+            new_key = f"{parent_key}/{k}" if parent_key else k
+            if isinstance(v, (dict, list)):
+                items.extend(flatten_kobo_payload(v, new_key).items())
+            else:
+                items.append((new_key, v))
+    elif isinstance(payload_dict, list):
+        for idx, item in enumerate(payload_dict):
+            new_key = f"{parent_key}[{idx}]"
+            if isinstance(item, (dict, list)):
+                items.extend(flatten_kobo_payload(item, new_key).items())
+            else:
+                items.append((new_key, item))
+    return dict(items)
 
 
 # ============================================================
@@ -279,25 +306,54 @@ def process_farm_report(payload: dict):
 
     image_parts = []
 
+    # Flatten nested payload dictionary to easily find keys under site_issues/
+    flat_payload = flatten_kobo_payload(payload)
+
 
     # --------------------------------------------------------
-    # EXTRACT DATA FIELDS FROM KOBO PAYLOAD
+    # EXTRACT DATA FIELDS FROM SITE ISSUES SECTION
     # --------------------------------------------------------
 
-    for key, val in payload.items():
+    # 1. Farmer's Email (Prefers fields within 'site_issues', falls back to any email field)
+    for key, val in flat_payload.items():
 
-        if "email" in key.lower() or "mail" in key.lower():
+        if "site_issues" in key.lower() and ("email" in key.lower() or "mail" in key.lower()):
 
             if val and "@" in str(val):
 
-                sender_email = str(val)
+                sender_email = str(val).strip()
+
+                break
+
+    if not sender_email:
+
+        for key, val in flat_payload.items():
+
+            if "email" in key.lower() or "mail" in key.lower():
+
+                if val and "@" in str(val):
+
+                    sender_email = str(val).strip()
+
+                    break
+
+
+    # 2. Date Planted
+    for key, val in flat_payload.items():
+
+        if ("site_issues" in key.lower() or "planted" in key.lower()) and "date" in key.lower():
+
+            if val and isinstance(val, (str, int)):
+
+                date_planted = str(val)
 
                 break
 
 
-    for key, val in payload.items():
+    # 3. Site Name
+    for key, val in flat_payload.items():
 
-        if any(site_key in key.lower() for site_key in ["site", "farm", "plot", "field_name"]):
+        if any(site_key in key.lower() for site_key in ["site_name", "farm_name", "site", "farm", "plot"]):
 
             if val and isinstance(val, str):
 
@@ -306,29 +362,8 @@ def process_farm_report(payload: dict):
                 break
 
 
-    for key, val in payload.items():
-
-        if any(region_key in key.lower() for region_key in ["region", "province", "location", "district", "area", "town"]):
-
-            if val and isinstance(val, str):
-
-                region_location = val
-
-                break
-
-
-    for key, val in payload.items():
-
-        if "date" in key.lower() and "plant" in key.lower():
-
-            if val and isinstance(val, str):
-
-                date_planted = val
-
-                break
-
-
-    for key, val in payload.items():
+    # 4. Soil Type
+    for key, val in flat_payload.items():
 
         if "soil" in key.lower():
 
@@ -339,7 +374,8 @@ def process_farm_report(payload: dict):
                 break
 
 
-    for key, val in payload.items():
+    # 5. Seedling / Crop Type
+    for key, val in flat_payload.items():
 
         if any(crop_key in key.lower() for crop_key in ["seedling", "crop"]):
 
@@ -350,18 +386,19 @@ def process_farm_report(payload: dict):
                 break
 
 
-    for key, val in payload.items():
+    # 6. Region / Location
+    for key, val in flat_payload.items():
 
-        if "observation" in key.lower() or "note" in key.lower() or "issue" in key.lower() or "description" in key.lower():
+        if any(region_key in key.lower() for region_key in ["region", "province", "location", "district", "area", "town"]):
 
             if val and isinstance(val, str):
 
-                weekly_observation = val
+                region_location = val
 
                 break
 
 
-    # Extract GPS Geolocation if region text key is not explicitly named
+    # Fallback to GPS if region is not specified
     if region_location == "Not specified" and "_geolocation" in payload:
 
         geo = payload.get("_geolocation")
@@ -371,8 +408,20 @@ def process_farm_report(payload: dict):
             region_location = f"GPS: {geo[0]}, {geo[1]}"
 
 
+    # 7. Weekly Observations / Site Issues
+    for key, val in flat_payload.items():
+
+        if any(obs_key in key.lower() for obs_key in ["observation", "issue", "note", "description", "problem"]):
+
+            if val and isinstance(val, str):
+
+                weekly_observation = val
+
+                break
+
+
     # --------------------------------------------------------
-    # EXTRACT & DOWNLOAD MULTIPLE IMAGE ATTACHMENTS
+    # EXTRACT & DOWNLOAD ATTACHED IMAGES
     # --------------------------------------------------------
 
     attachments = payload.get("_attachments", [])
@@ -419,7 +468,7 @@ def process_farm_report(payload: dict):
     print(f"Date Planted: {date_planted}")
     print(f"Soil Type: {soil_type}")
     print(f"Seedling/Crop Type: {seedling_crop_type}")
-    print(f"Observation: {weekly_observation}")
+    print(f"Weekly Observations: {weekly_observation}")
     print(f"Total Images Attached: {len(image_parts)}")
     print("------------------------------------------")
 
@@ -438,7 +487,7 @@ def process_farm_report(payload: dict):
     prompt_text = f"""
 You are an agricultural expert helping smallholder farmers in South Africa.
 
-Analyze the following farm report, location context, soil metrics, and all attached crop images.
+Analyze the following site issue report, soil parameters, and all attached crop images.
 
 
 SITE / FARM NAME: {site_name}
@@ -451,7 +500,7 @@ SEEDLING/CROP TYPE: {seedling_crop_type}
 
 FARM LOCATION / REGION: {region_location}
 
-FIELD OBSERVATION: {weekly_observation}
+FIELD OBSERVATION / ISSUE REPORTED: {weekly_observation}
 
 
 TASK:
@@ -487,7 +536,7 @@ Include:
         print("--> Calling Gemini API with multi-image, site, soil, and regional context...")
 
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-2.5-flash",
             contents=contents
         )
 
@@ -538,7 +587,7 @@ def home():
 
     return {
         "status": "Live",
-        "service": "Agricultural AI Assistant (Multi-Image, Site & Regional Kobo to Email)"
+        "service": "Agricultural AI Assistant (Site Issues Extraction & Diagnostics)"
     }
 
 
