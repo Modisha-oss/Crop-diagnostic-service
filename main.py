@@ -1,4 +1,5 @@
 import os
+import re
 import warnings
 import requests
 import resend
@@ -22,7 +23,7 @@ warnings.filterwarnings("ignore")
 
 app = FastAPI(
     title="Modisha's Agricultural AI Assistant (Email)",
-    version="1.4"
+    version="1.5"
 )
 
 
@@ -100,6 +101,40 @@ def flatten_kobo_payload(payload_dict, parent_key=''):
 
 
 # ============================================================
+# HELPER: SANITIZE KOBO EMAIL ADDRESS
+# ============================================================
+
+def sanitize_email(raw_val: str) -> str:
+    """
+    Fixes Kobo form values where @ and . are replaced by underscores
+    (e.g., 'modishahaarmans_gmail_com' -> 'modishahaarmans@gmail.com').
+    """
+    if not raw_val or not isinstance(raw_val, str):
+        return ""
+    
+    val = raw_val.strip()
+
+    # If already a valid email, return as-is
+    if "@" in val and "." in val:
+        return val
+
+    # Convert pattern 'name_gmail_com' or 'name_domain_com'
+    if "_gmail_com" in val:
+        val = val.replace("_gmail_com", "@gmail.com")
+    elif "_yahoo_com" in val:
+        val = val.replace("_yahoo_com", "@yahoo.com")
+    elif "_outlook_com" in val:
+        val = val.replace("_outlook_com", "@outlook.com")
+    else:
+        # Match pattern: word_word_tld -> word@word.tld
+        parts = val.rsplit('_', 2)
+        if len(parts) == 3:
+            val = f"{parts[0]}@{parts[1]}.{parts[2]}"
+
+    return val
+
+
+# ============================================================
 # SEND EMAIL FUNCTION (RESEND)
 # ============================================================
 
@@ -137,10 +172,10 @@ def send_email_message(
         return
 
 
-    if not clean_email:
+    if not clean_email or "@" not in clean_email:
 
         print(
-            "ERROR: Recipient email is empty. Cannot dispatch email."
+            "ERROR: Recipient email is invalid or empty. Cannot dispatch email."
         )
 
         return
@@ -292,13 +327,6 @@ def process_farm_report(payload: dict):
     # Flatten nested payload
     flat_payload = flatten_kobo_payload(payload)
 
-    # PRINT ALL RECEIVED KEYS FOR DEBUGGING IN RENDER LOGS
-    print("RECEIVED KOBO KEYS & VALUES:")
-    for k, v in flat_payload.items():
-        if not str(k).startswith("_") and len(str(v)) < 100:
-            print(f"  {k} ==> {v}")
-    print("------------------------------------------")
-
     sender_email = ""
 
     site_name = "Not specified"
@@ -324,23 +352,37 @@ def process_farm_report(payload: dict):
 
 
     # --------------------------------------------------------
-    # 1. EXTRACT FARMER EMAIL
+    # 1. EXTRACT & SANITIZE FARMER EMAIL
     # --------------------------------------------------------
 
     for key, val in flat_payload.items():
 
-        if val and isinstance(val, str) and "@" in val and "." in val:
+        k_lower = key.lower()
 
-            # Ignore generic non-user email strings if any
-            if not any(ign in key.lower() for ign in ["meta", "attachment"]):
+        if "email" in k_lower and val and isinstance(val, str):
 
-                sender_email = val.strip()
+            sender_email = sanitize_email(val)
+
+            if sender_email:
 
                 break
 
+    # Fallback search if key name doesn't contain 'email'
+    if not sender_email:
+
+        for key, val in flat_payload.items():
+
+            if val and isinstance(val, str) and ("@" in val or "_gmail_com" in val):
+
+                sender_email = sanitize_email(val)
+
+                if sender_email:
+
+                    break
+
 
     # --------------------------------------------------------
-    # 2. EXTRACT SITE NAME (Excludes Date/Metadata values)
+    # 2. EXTRACT SITE NAME
     # --------------------------------------------------------
 
     for key, val in flat_payload.items():
@@ -349,7 +391,6 @@ def process_farm_report(payload: dict):
 
         if any(sk in k_lower for sk in ["site_name", "farm_name", "site", "farm_id", "plot_name"]):
 
-            # Check key is not metadata and value isn't a date string (e.g. YYYY-MM-DD)
             if not any(ign in k_lower for ign in ignored_metadata_keys + ["date", "time"]):
 
                 if val and isinstance(val, str) and not (len(val) == 10 and val.count("-") == 2):
@@ -439,7 +480,6 @@ def process_farm_report(payload: dict):
 
         if any(ok in k_lower for ok in ["observation", "issue", "notes", "description", "problem", "comment"]):
 
-            # Ensure value is descriptive text, not a date or ID key
             if not any(ign in k_lower for ign in ignored_metadata_keys + ["date", "time"]):
 
                 if val and isinstance(val, str) and not (len(val) == 10 and val.count("-") == 2):
