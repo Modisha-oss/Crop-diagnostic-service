@@ -1,5 +1,5 @@
 import os
-import re
+import time
 import warnings
 import requests
 import resend
@@ -23,7 +23,7 @@ warnings.filterwarnings("ignore")
 
 app = FastAPI(
     title="Modisha's Agricultural AI Assistant (Email)",
-    version="1.5"
+    version="1.6"
 )
 
 
@@ -80,7 +80,7 @@ else:
 def flatten_kobo_payload(payload_dict, parent_key=''):
     """
     Recursively flattens KoboToolbox payloads (including nested groups like site_issues)
-    so field names like 'site_issues/farmer_email' can be parsed cleanly.
+    so field names like 'site_issues/weekly_observation' can be matched exactly.
     """
     items = []
     if isinstance(payload_dict, dict):
@@ -105,20 +105,14 @@ def flatten_kobo_payload(payload_dict, parent_key=''):
 # ============================================================
 
 def sanitize_email(raw_val: str) -> str:
-    """
-    Fixes Kobo form values where @ and . are replaced by underscores
-    (e.g., 'modishahaarmans_gmail_com' -> 'modishahaarmans@gmail.com').
-    """
     if not raw_val or not isinstance(raw_val, str):
         return ""
     
     val = raw_val.strip()
 
-    # If already a valid email, return as-is
     if "@" in val and "." in val:
         return val
 
-    # Convert pattern 'name_gmail_com' or 'name_domain_com'
     if "_gmail_com" in val:
         val = val.replace("_gmail_com", "@gmail.com")
     elif "_yahoo_com" in val:
@@ -126,7 +120,6 @@ def sanitize_email(raw_val: str) -> str:
     elif "_outlook_com" in val:
         val = val.replace("_outlook_com", "@outlook.com")
     else:
-        # Match pattern: word_word_tld -> word@word.tld
         parts = val.rsplit('_', 2)
         if len(parts) == 3:
             val = f"{parts[0]}@{parts[1]}.{parts[2]}"
@@ -154,42 +147,28 @@ def send_email_message(
 
     clean_email = str(to_email).strip().lower()
 
-    print(
-        f"Recipient Email: {clean_email}"
-    )
+    print(f"Recipient Email: {clean_email}")
 
-    print(
-        f"Sender Email: {SENDER_EMAIL}"
-    )
+    print(f"Sender Email: {SENDER_EMAIL}")
 
 
     if not RESEND_API_KEY:
 
-        print(
-            "ERROR: RESEND_API_KEY is missing from Environment Variables."
-        )
+        print("ERROR: RESEND_API_KEY is missing from Environment Variables.")
 
         return
 
 
     if not clean_email or "@" not in clean_email:
 
-        print(
-            "ERROR: Recipient email is invalid or empty. Cannot dispatch email."
-        )
+        print("ERROR: Recipient email is invalid or empty. Skipping dispatch.")
 
         return
 
 
-    # --------------------------------------------------------
-    # SEND EMAIL VIA RESEND API
-    # --------------------------------------------------------
-
     try:
 
-        print(
-            "--> Dispatching email via Resend..."
-        )
+        print("--> Dispatching email via Resend...")
 
         html_content = f"""
         <div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333333;">
@@ -220,9 +199,7 @@ def send_email_message(
         print("      EMAIL DISPATCH SUCCESSFUL!")
         print("==========================================")
 
-        print(
-            f"Email ID: {response.get('id')}"
-        )
+        print(f"Email ID: {response.get('id')}")
 
 
     except Exception as error:
@@ -232,15 +209,9 @@ def send_email_message(
         print("         EMAIL DISPATCH ERROR")
         print("==========================================")
 
-        print(
-            "Error type:",
-            type(error).__name__
-        )
+        print("Error type:", type(error).__name__)
 
-        print(
-            "Error message:",
-            str(error)
-        )
+        print("Error message:", str(error))
 
         print("==========================================")
 
@@ -256,9 +227,7 @@ def download_kobo_media(download_url: str):
     print("       KOBO MEDIA DOWNLOAD STARTED")
     print("==========================================")
 
-    print(
-        f"Download URL: {download_url}"
-    )
+    print(f"Download URL: {download_url}")
 
     headers = {}
 
@@ -280,35 +249,24 @@ def download_kobo_media(download_url: str):
 
             content_type = res.headers.get("Content-Type", "image/jpeg")
 
-            print(
-                "--> Kobo image download successful!"
-            )
+            print("--> Kobo image download successful!")
 
-            print(
-                f"--> MIME type: {content_type}"
-            )
+            print(f"--> MIME type: {content_type}")
 
             return res.content, content_type
 
         else:
 
-            print(
-                f"--> Failed to download Kobo media. HTTP {res.status_code}"
-            )
+            print(f"--> Failed to download Kobo media. HTTP {res.status_code}")
 
             return None, "image/jpeg"
 
 
     except Exception as error:
 
-        print(
-            "--> Exception occurred while downloading Kobo media:"
-        )
+        print("--> Exception occurred while downloading Kobo media:")
 
-        print(
-            type(error).__name__,
-            str(error)
-        )
+        print(type(error).__name__, str(error))
 
         return None, "image/jpeg"
 
@@ -324,7 +282,6 @@ def process_farm_report(payload: dict):
     print("        NEW FARM REPORT RECEIVED")
     print("==========================================")
 
-    # Flatten nested payload
     flat_payload = flatten_kobo_payload(payload)
 
     sender_email = ""
@@ -344,123 +301,63 @@ def process_farm_report(payload: dict):
     image_parts = []
 
 
-    # Kobo internal metadata keys to strictly ignore
-    ignored_metadata_keys = [
-        "_id", "_uuid", "_submission_time", "_submitted_by",
-        "_status", "start", "end", "today", "deviceid", "instanceID"
-    ]
-
-
     # --------------------------------------------------------
-    # 1. EXTRACT & SANITIZE FARMER EMAIL
+    # STRICT SUFFIX EXTRACTION FOR EXACT FIELD MATCHING
     # --------------------------------------------------------
 
     for key, val in flat_payload.items():
 
+        if not val or not isinstance(val, str):
+
+            continue
+
+
         k_lower = key.lower()
 
-        if "email" in k_lower and val and isinstance(val, str):
+
+        # 1. Email Address
+        if k_lower.endswith("farmer_email") or k_lower.endswith("email"):
 
             sender_email = sanitize_email(val)
 
-            if sender_email:
 
-                break
+        # 2. Weekly Observation (Checks exact field name suffix first)
+        elif k_lower.endswith("weekly_observation") or k_lower.endswith("observation") or k_lower.endswith("issue_description"):
 
-    # Fallback search if key name doesn't contain 'email'
-    if not sender_email:
-
-        for key, val in flat_payload.items():
-
-            if val and isinstance(val, str) and ("@" in val or "_gmail_com" in val):
-
-                sender_email = sanitize_email(val)
-
-                if sender_email:
-
-                    break
+            weekly_observation = val.strip()
 
 
-    # --------------------------------------------------------
-    # 2. EXTRACT SITE NAME
-    # --------------------------------------------------------
+        # 3. Site Name
+        elif k_lower.endswith("site_name") or k_lower.endswith("farm_name"):
 
-    for key, val in flat_payload.items():
-
-        k_lower = key.lower()
-
-        if any(sk in k_lower for sk in ["site_name", "farm_name", "site", "farm_id", "plot_name"]):
-
-            if not any(ign in k_lower for ign in ignored_metadata_keys + ["date", "time"]):
-
-                if val and isinstance(val, str) and not (len(val) == 10 and val.count("-") == 2):
-
-                    site_name = val.strip()
-
-                    break
+            site_name = val.strip()
 
 
-    # --------------------------------------------------------
-    # 3. EXTRACT DATE PLANTED
-    # --------------------------------------------------------
+        # 4. Region / Location
+        elif k_lower.endswith("location") or k_lower.endswith("region") or k_lower.endswith("province"):
 
-    for key, val in flat_payload.items():
-
-        k_lower = key.lower()
-
-        if "plant" in k_lower or "date_planted" in k_lower or "planting_date" in k_lower:
-
-            if val and isinstance(val, str):
-
-                date_planted = val.strip()
-
-                break
+            region_location = val.strip()
 
 
-    # --------------------------------------------------------
-    # 4. EXTRACT SOIL TYPE
-    # --------------------------------------------------------
+        # 5. Soil Type
+        elif k_lower.endswith("soil_type") or k_lower.endswith("soil"):
 
-    for key, val in flat_payload.items():
-
-        if "soil" in key.lower():
-
-            if val and isinstance(val, str):
-
-                soil_type = val.strip()
-
-                break
+            soil_type = val.strip()
 
 
-    # --------------------------------------------------------
-    # 5. EXTRACT SEEDLING / CROP TYPE
-    # --------------------------------------------------------
+        # 6. Crop / Seedling Type
+        elif k_lower.endswith("seedling_crop_type") or k_lower.endswith("crop_type") or k_lower.endswith("seedling"):
 
-    for key, val in flat_payload.items():
-
-        if any(ck in key.lower() for ck in ["seedling", "crop"]):
-
-            if val and isinstance(val, str):
-
-                seedling_crop_type = val.strip()
-
-                break
+            seedling_crop_type = val.strip()
 
 
-    # --------------------------------------------------------
-    # 6. EXTRACT REGION / LOCATION
-    # --------------------------------------------------------
+        # 7. Date Planted
+        elif "date" in k_lower or "planted" in k_lower:
 
-    for key, val in flat_payload.items():
+            date_planted = val.strip()
 
-        if any(rk in key.lower() for rk in ["region", "province", "location", "district", "area", "town"]):
 
-            if val and isinstance(val, str):
-
-                region_location = val.strip()
-
-                break
-
+    # Fallback to GPS if location is still default
     if region_location == "Not specified" and "_geolocation" in payload:
 
         geo = payload.get("_geolocation")
@@ -468,25 +365,6 @@ def process_farm_report(payload: dict):
         if geo and isinstance(geo, list) and len(geo) >= 2:
 
             region_location = f"GPS: {geo[0]}, {geo[1]}"
-
-
-    # --------------------------------------------------------
-    # 7. EXTRACT WEEKLY OBSERVATIONS / SITE ISSUES
-    # --------------------------------------------------------
-
-    for key, val in flat_payload.items():
-
-        k_lower = key.lower()
-
-        if any(ok in k_lower for ok in ["observation", "issue", "notes", "description", "problem", "comment"]):
-
-            if not any(ign in k_lower for ign in ignored_metadata_keys + ["date", "time"]):
-
-                if val and isinstance(val, str) and not (len(val) == 10 and val.count("-") == 2):
-
-                    weekly_observation = val.strip()
-
-                    break
 
 
     # --------------------------------------------------------
@@ -594,25 +472,50 @@ Include:
 
 
     # --------------------------------------------------------
-    # PREPARE & CALL GEMINI
+    # PREPARE & CALL GEMINI WITH RETRY LOGIC (503 HANDLING)
     # --------------------------------------------------------
 
     contents = [prompt_text] + image_parts
 
+    diagnostic_report = None
 
-    try:
+    max_retries = 3
 
-        print("--> Calling Gemini API with multi-image, site, soil, and regional context...")
+    for attempt in range(1, max_retries + 1):
 
-        response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=contents
-        )
+        try:
 
-        diagnostic_report = (
-            response.text if response.text else "Gemini did not return an assessment."
-        )
+            print(f"--> Calling Gemini API (Attempt {attempt}/{max_retries})...")
 
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=contents
+            )
+
+            if response and response.text:
+
+                diagnostic_report = response.text
+
+                break
+
+        except Exception as error:
+
+            print(f"--> Gemini attempt {attempt} failed: {error}")
+
+            if attempt < max_retries:
+
+                sleep_time = attempt * 2
+
+                print(f"--> Waiting {sleep_time}s before retrying...")
+
+                time.sleep(sleep_time)
+
+            else:
+
+                print("--> Max retries reached for Gemini API.")
+
+
+    if diagnostic_report:
 
         print()
         print("==========================================")
@@ -640,11 +543,6 @@ Include:
         else:
 
             print("WARNING: No email address extracted from Kobo submission. Skipping email dispatch.")
-
-
-    except Exception as error:
-
-        print("ERROR: Gemini processing failed:", str(error))
 
 
 # ============================================================
