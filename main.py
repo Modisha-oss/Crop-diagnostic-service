@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore")
 
 app = FastAPI(
     title="Modisha's Agricultural AI Assistant (Email)",
-    version="1.3"
+    version="1.4"
 )
 
 
@@ -79,7 +79,7 @@ else:
 def flatten_kobo_payload(payload_dict, parent_key=''):
     """
     Recursively flattens KoboToolbox payloads (including nested groups like site_issues)
-    so field names like 'site_issues/farmer_email' or nested dicts can be matched reliably.
+    so field names like 'site_issues/farmer_email' can be parsed cleanly.
     """
     items = []
     if isinstance(payload_dict, dict):
@@ -140,7 +140,7 @@ def send_email_message(
     if not clean_email:
 
         print(
-            "ERROR: Recipient email is empty."
+            "ERROR: Recipient email is empty. Cannot dispatch email."
         )
 
         return
@@ -156,7 +156,6 @@ def send_email_message(
             "--> Dispatching email via Resend..."
         )
 
-        # Convert markdown formatted report to styled HTML lines
         html_content = f"""
         <div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333333;">
             <h2 style="color: #2e7d32; margin-bottom: 5px;">Agricultural Diagnostic Report</h2>
@@ -290,9 +289,19 @@ def process_farm_report(payload: dict):
     print("        NEW FARM REPORT RECEIVED")
     print("==========================================")
 
+    # Flatten nested payload
+    flat_payload = flatten_kobo_payload(payload)
+
+    # PRINT ALL RECEIVED KEYS FOR DEBUGGING IN RENDER LOGS
+    print("RECEIVED KOBO KEYS & VALUES:")
+    for k, v in flat_payload.items():
+        if not str(k).startswith("_") and len(str(v)) < 100:
+            print(f"  {k} ==> {v}")
+    print("------------------------------------------")
+
     sender_email = ""
 
-    site_name = "Main Production Site"
+    site_name = "Not specified"
 
     region_location = "Not specified"
 
@@ -306,99 +315,111 @@ def process_farm_report(payload: dict):
 
     image_parts = []
 
-    # Flatten nested payload dictionary to easily find keys under site_issues/
-    flat_payload = flatten_kobo_payload(payload)
+
+    # Kobo internal metadata keys to strictly ignore
+    ignored_metadata_keys = [
+        "_id", "_uuid", "_submission_time", "_submitted_by",
+        "_status", "start", "end", "today", "deviceid", "instanceID"
+    ]
 
 
     # --------------------------------------------------------
-    # EXTRACT DATA FIELDS FROM SITE ISSUES SECTION
+    # 1. EXTRACT FARMER EMAIL
     # --------------------------------------------------------
 
-    # 1. Farmer's Email (Prefers fields within 'site_issues', falls back to any email field)
     for key, val in flat_payload.items():
 
-        if "site_issues" in key.lower() and ("email" in key.lower() or "mail" in key.lower()):
+        if val and isinstance(val, str) and "@" in val and "." in val:
 
-            if val and "@" in str(val):
+            # Ignore generic non-user email strings if any
+            if not any(ign in key.lower() for ign in ["meta", "attachment"]):
 
-                sender_email = str(val).strip()
+                sender_email = val.strip()
 
                 break
 
-    if not sender_email:
 
-        for key, val in flat_payload.items():
+    # --------------------------------------------------------
+    # 2. EXTRACT SITE NAME (Excludes Date/Metadata values)
+    # --------------------------------------------------------
 
-            if "email" in key.lower() or "mail" in key.lower():
+    for key, val in flat_payload.items():
 
-                if val and "@" in str(val):
+        k_lower = key.lower()
 
-                    sender_email = str(val).strip()
+        if any(sk in k_lower for sk in ["site_name", "farm_name", "site", "farm_id", "plot_name"]):
+
+            # Check key is not metadata and value isn't a date string (e.g. YYYY-MM-DD)
+            if not any(ign in k_lower for ign in ignored_metadata_keys + ["date", "time"]):
+
+                if val and isinstance(val, str) and not (len(val) == 10 and val.count("-") == 2):
+
+                    site_name = val.strip()
 
                     break
 
 
-    # 2. Date Planted
+    # --------------------------------------------------------
+    # 3. EXTRACT DATE PLANTED
+    # --------------------------------------------------------
+
     for key, val in flat_payload.items():
 
-        if ("site_issues" in key.lower() or "planted" in key.lower()) and "date" in key.lower():
+        k_lower = key.lower()
 
-            if val and isinstance(val, (str, int)):
-
-                date_planted = str(val)
-
-                break
-
-
-    # 3. Site Name
-    for key, val in flat_payload.items():
-
-        if any(site_key in key.lower() for site_key in ["site_name", "farm_name", "site", "farm", "plot"]):
+        if "plant" in k_lower or "date_planted" in k_lower or "planting_date" in k_lower:
 
             if val and isinstance(val, str):
 
-                site_name = val
+                date_planted = val.strip()
 
                 break
 
 
-    # 4. Soil Type
+    # --------------------------------------------------------
+    # 4. EXTRACT SOIL TYPE
+    # --------------------------------------------------------
+
     for key, val in flat_payload.items():
 
         if "soil" in key.lower():
 
             if val and isinstance(val, str):
 
-                soil_type = val
+                soil_type = val.strip()
 
                 break
 
 
-    # 5. Seedling / Crop Type
+    # --------------------------------------------------------
+    # 5. EXTRACT SEEDLING / CROP TYPE
+    # --------------------------------------------------------
+
     for key, val in flat_payload.items():
 
-        if any(crop_key in key.lower() for crop_key in ["seedling", "crop"]):
+        if any(ck in key.lower() for ck in ["seedling", "crop"]):
 
             if val and isinstance(val, str):
 
-                seedling_crop_type = val
+                seedling_crop_type = val.strip()
 
                 break
 
 
-    # 6. Region / Location
+    # --------------------------------------------------------
+    # 6. EXTRACT REGION / LOCATION
+    # --------------------------------------------------------
+
     for key, val in flat_payload.items():
 
-        if any(region_key in key.lower() for region_key in ["region", "province", "location", "district", "area", "town"]):
+        if any(rk in key.lower() for rk in ["region", "province", "location", "district", "area", "town"]):
 
             if val and isinstance(val, str):
 
-                region_location = val
+                region_location = val.strip()
 
                 break
 
-
-    # Fallback to GPS if region is not specified
     if region_location == "Not specified" and "_geolocation" in payload:
 
         geo = payload.get("_geolocation")
@@ -408,16 +429,24 @@ def process_farm_report(payload: dict):
             region_location = f"GPS: {geo[0]}, {geo[1]}"
 
 
-    # 7. Weekly Observations / Site Issues
+    # --------------------------------------------------------
+    # 7. EXTRACT WEEKLY OBSERVATIONS / SITE ISSUES
+    # --------------------------------------------------------
+
     for key, val in flat_payload.items():
 
-        if any(obs_key in key.lower() for obs_key in ["observation", "issue", "note", "description", "problem"]):
+        k_lower = key.lower()
 
-            if val and isinstance(val, str):
+        if any(ok in k_lower for ok in ["observation", "issue", "notes", "description", "problem", "comment"]):
 
-                weekly_observation = val
+            # Ensure value is descriptive text, not a date or ID key
+            if not any(ign in k_lower for ign in ignored_metadata_keys + ["date", "time"]):
 
-                break
+                if val and isinstance(val, str) and not (len(val) == 10 and val.count("-") == 2):
+
+                    weekly_observation = val.strip()
+
+                    break
 
 
     # --------------------------------------------------------
@@ -570,7 +599,7 @@ Include:
 
         else:
 
-            print("WARNING: No email address extracted from Kobo submission.")
+            print("WARNING: No email address extracted from Kobo submission. Skipping email dispatch.")
 
 
     except Exception as error:
