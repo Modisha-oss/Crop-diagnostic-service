@@ -9,6 +9,9 @@ from fastapi import FastAPI, HTTPException, Request
 from google import genai
 from google.genai import types
 
+from groq import Groq
+from supabase import create_client, Client
+
 
 # ============================================================
 # SUPPRESS NON-CRITICAL WARNINGS
@@ -22,8 +25,8 @@ warnings.filterwarnings("ignore")
 # ============================================================
 
 app = FastAPI(
-    title="Modisha's Agricultural AI Assistant (Email)",
-    version="1.6"
+    title="Modisha's Agricultural AI Assistant (Groq & Supabase)",
+    version="1.7"
 )
 
 
@@ -31,11 +34,17 @@ app = FastAPI(
 # ENVIRONMENT VARIABLES
 # ============================================================
 
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 KOBO_TOKEN = os.environ.get("KOBO_TOKEN")
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 SENDER_EMAIL = os.environ.get(
     "SENDER_EMAIL", 
@@ -44,18 +53,31 @@ SENDER_EMAIL = os.environ.get(
 
 
 # ============================================================
-# GEMINI & RESEND SETUP
+# CLIENT INITIALIZATIONS
 # ============================================================
+
+if GROQ_API_KEY:
+
+    groq_client = Groq(api_key=GROQ_API_KEY)
+
+else:
+
+    groq_client = None
+
+    print(
+        "WARNING: GROQ_API_KEY is missing."
+    )
+
 
 if GEMINI_API_KEY:
 
-    client = genai.Client(
+    gemini_client = genai.Client(
         api_key=GEMINI_API_KEY
     )
 
 else:
 
-    client = None
+    gemini_client = None
 
     print(
         "WARNING: GEMINI_API_KEY is missing."
@@ -70,6 +92,19 @@ else:
 
     print(
         "WARNING: RESEND_API_KEY is missing."
+    )
+
+
+if SUPABASE_URL and SUPABASE_KEY:
+
+    supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+else:
+
+    supabase_client = None
+
+    print(
+        "WARNING: SUPABASE_URL or SUPABASE_KEY is missing."
     )
 
 
@@ -128,6 +163,72 @@ def sanitize_email(raw_val: str) -> str:
 
 
 # ============================================================
+# SAVE TO SUPABASE DATABASE
+# ============================================================
+
+def save_report_to_supabase(
+    sender_email: str,
+    site_name: str,
+    region_location: str,
+    date_planted: str,
+    soil_type: str,
+    seedling_crop_type: str,
+    weekly_observation: str,
+    diagnostic_report: str,
+    ai_engine_used: str
+):
+
+    print()
+    print("==========================================")
+    print("       SUPABASE DATABASE SAVE STARTED")
+    print("==========================================")
+
+    if not supabase_client:
+
+        print("WARNING: Supabase client is not configured. Skipping database record insertion.")
+
+        return
+
+    try:
+
+        print("--> Inserting diagnostic record into Supabase table 'crop_reports'...")
+
+        data = {
+            "farmer_email": sender_email,
+            "site_name": site_name,
+            "region_location": region_location,
+            "date_planted": date_planted,
+            "soil_type": soil_type,
+            "crop_type": seedling_crop_type,
+            "observation": weekly_observation,
+            "diagnostic_report": diagnostic_report,
+            "ai_engine": ai_engine_used
+        }
+
+        response = supabase_client.table("crop_reports").insert(data).execute()
+
+        print()
+        print("==========================================")
+        print("     SUPABASE RECORD SAVED SUCCESSFUL!")
+        print("==========================================")
+
+        print("Record Data:", response.data)
+
+    except Exception as error:
+
+        print()
+        print("==========================================")
+        print("      SUPABASE RECORD SAVE ERROR")
+        print("==========================================")
+
+        print("Error type:", type(error).__name__)
+
+        print("Error message:", str(error))
+
+        print("==========================================")
+
+
+# ============================================================
 # SEND EMAIL FUNCTION (RESEND)
 # ============================================================
 
@@ -142,7 +243,7 @@ def send_email_message(
 
     print()
     print("==========================================")
-    print("         EMAIL PROCESS STARTED")
+    print("          EMAIL PROCESS STARTED")
     print("==========================================")
 
     clean_email = str(to_email).strip().lower()
@@ -206,7 +307,7 @@ def send_email_message(
 
         print()
         print("==========================================")
-        print("         EMAIL DISPATCH ERROR")
+        print("          EMAIL DISPATCH ERROR")
         print("==========================================")
 
         print("Error type:", type(error).__name__)
@@ -272,6 +373,106 @@ def download_kobo_media(download_url: str):
 
 
 # ============================================================
+# GENERATE REPORT WITH GROQ
+# ============================================================
+
+def generate_report_groq(prompt_text: str):
+
+    if not groq_client:
+
+        print("--> Groq client not configured. Skipping Groq execution.")
+
+        return None
+
+    max_retries = 3
+
+    for attempt in range(1, max_retries + 1):
+
+        try:
+
+            print(f"--> Calling Groq API (Attempt {attempt}/{max_retries})...")
+
+            chat_completion = groq_client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an agricultural AI diagnostic assistant helping smallholder farmers."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt_text,
+                    }
+                ],
+                model="llama-3.3-70b-versatile",
+                temperature=0.3
+            )
+
+            if chat_completion and chat_completion.choices:
+
+                return chat_completion.choices[0].message.content
+
+        except Exception as error:
+
+            print(f"--> Groq attempt {attempt} failed: {error}")
+
+            if attempt < max_retries:
+
+                sleep_time = attempt * 2
+
+                print(f"--> Waiting {sleep_time}s before retrying Groq...")
+
+                time.sleep(sleep_time)
+
+    return None
+
+
+# ============================================================
+# GENERATE REPORT WITH GEMINI (FALLBACK)
+# ============================================================
+
+def generate_report_gemini(prompt_text: str, image_parts: list):
+
+    if not gemini_client:
+
+        print("--> Gemini client not configured. Skipping Gemini execution.")
+
+        return None
+
+    contents = [prompt_text] + image_parts
+
+    max_retries = 3
+
+    for attempt in range(1, max_retries + 1):
+
+        try:
+
+            print(f"--> Calling Gemini API (Attempt {attempt}/{max_retries})...")
+
+            response = gemini_client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=contents
+            )
+
+            if response and response.text:
+
+                return response.text
+
+        except Exception as error:
+
+            print(f"--> Gemini attempt {attempt} failed: {error}")
+
+            if attempt < max_retries:
+
+                sleep_time = attempt * 2
+
+                print(f"--> Waiting {sleep_time}s before retrying Gemini...")
+
+                time.sleep(sleep_time)
+
+    return None
+
+
+# ============================================================
 # PROCESS FARM REPORT
 # ============================================================
 
@@ -279,7 +480,7 @@ def process_farm_report(payload: dict):
 
     print()
     print("==========================================")
-    print("        NEW FARM REPORT RECEIVED")
+    print("         NEW FARM REPORT RECEIVED")
     print("==========================================")
 
     flat_payload = flatten_kobo_payload(payload)
@@ -321,7 +522,7 @@ def process_farm_report(payload: dict):
             sender_email = sanitize_email(val)
 
 
-        # 2. Weekly Observation (Checks exact field name suffix first)
+        # 2. Weekly Observation
         elif k_lower.endswith("weekly_observation") or k_lower.endswith("observation") or k_lower.endswith("issue_description"):
 
             weekly_observation = val.strip()
@@ -420,13 +621,6 @@ def process_farm_report(payload: dict):
     print("------------------------------------------")
 
 
-    if not client:
-
-        print("ERROR: Gemini client is not configured.")
-
-        return
-
-
     # --------------------------------------------------------
     # CREATE AI PROMPT
     # --------------------------------------------------------
@@ -434,7 +628,7 @@ def process_farm_report(payload: dict):
     prompt_text = f"""
 You are an agricultural expert helping smallholder farmers in South Africa.
 
-Analyze the following site issue report, soil parameters, and all attached crop images.
+Analyze the following site issue report, soil parameters, and crop data.
 
 
 SITE / FARM NAME: {site_name}
@@ -459,7 +653,7 @@ Reference the site name ({site_name}) and tailor your diagnostic, soil managemen
 
 Include:
 
-1. Primary Issue / Pests / Diseases identified across the attached photos and observation
+1. Primary Issue / Pests / Diseases identified based on the observation data
 
 2. Severity Rating (Mild, Moderate, or Severe)
 
@@ -472,48 +666,35 @@ Include:
 
 
     # --------------------------------------------------------
-    # PREPARE & CALL GEMINI WITH RETRY LOGIC (503 HANDLING)
+    # AI EXECUTION ENGINE (GROQ FIRST, GEMINI FALLBACK)
     # --------------------------------------------------------
-
-    contents = [prompt_text] + image_parts
 
     diagnostic_report = None
 
-    max_retries = 3
+    ai_engine_used = ""
 
-    for attempt in range(1, max_retries + 1):
+    # Primary Attempt: Groq AI
+    diagnostic_report = generate_report_groq(prompt_text)
 
-        try:
+    if diagnostic_report:
 
-            print(f"--> Calling Gemini API (Attempt {attempt}/{max_retries})...")
+        ai_engine_used = "Groq (llama-3.3-70b-versatile)"
 
-            response = client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=contents
-            )
+    else:
 
-            if response and response.text:
+        print("--> Groq engine failed or unavailable. Falling back to Gemini...")
 
-                diagnostic_report = response.text
+        # Fallback Attempt: Gemini AI
+        diagnostic_report = generate_report_gemini(prompt_text, image_parts)
 
-                break
+        if diagnostic_report:
 
-        except Exception as error:
+            ai_engine_used = "Gemini (gemini-3.6-flash)"
 
-            print(f"--> Gemini attempt {attempt} failed: {error}")
 
-            if attempt < max_retries:
-
-                sleep_time = attempt * 2
-
-                print(f"--> Waiting {sleep_time}s before retrying...")
-
-                time.sleep(sleep_time)
-
-            else:
-
-                print("--> Max retries reached for Gemini API.")
-
+    # --------------------------------------------------------
+    # REPORT DISPATCH & DATABASE PERSISTENCE
+    # --------------------------------------------------------
 
     if diagnostic_report:
 
@@ -521,14 +702,27 @@ Include:
         print("==========================================")
         print("          AI REPORT GENERATED")
         print("==========================================")
+        print(f"Engine Used: {ai_engine_used}")
+        print("------------------------------------------")
         print(diagnostic_report)
         print("==========================================")
 
 
-        # ----------------------------------------------------
-        # DISPATCH REPORT VIA EMAIL
-        # ----------------------------------------------------
+        # 1. SAVE TO SUPABASE (Only executed after successful report generation)
+        save_report_to_supabase(
+            sender_email=sender_email,
+            site_name=site_name,
+            region_location=region_location,
+            date_planted=date_planted,
+            soil_type=soil_type,
+            seedling_crop_type=seedling_crop_type,
+            weekly_observation=weekly_observation,
+            diagnostic_report=diagnostic_report,
+            ai_engine_used=ai_engine_used
+        )
 
+
+        # 2. DISPATCH REPORT VIA EMAIL
         if sender_email:
 
             send_email_message(
@@ -544,6 +738,10 @@ Include:
 
             print("WARNING: No email address extracted from Kobo submission. Skipping email dispatch.")
 
+    else:
+
+        print("ERROR: Failed to generate report using both Groq and Gemini AI engines.")
+
 
 # ============================================================
 # ENDPOINTS
@@ -554,7 +752,7 @@ def home():
 
     return {
         "status": "Live",
-        "service": "Agricultural AI Assistant (Site Issues Extraction & Diagnostics)"
+        "service": "Agricultural AI Assistant (Groq, Gemini & Supabase Diagnostics)"
     }
 
 
@@ -563,8 +761,10 @@ def health():
 
     return {
         "status": "healthy",
+        "groq_configured": bool(GROQ_API_KEY),
         "gemini_configured": bool(GEMINI_API_KEY),
         "resend_configured": bool(RESEND_API_KEY),
+        "supabase_configured": bool(SUPABASE_URL and SUPABASE_KEY),
         "kobo_configured": bool(KOBO_TOKEN)
     }
 
@@ -586,5 +786,5 @@ async def handle_kobo_webhook(request: Request):
 
     return {
         "status": "success",
-        "message": "Kobo submission processed and Email dispatched."
+        "message": "Kobo submission processed, report generated, saved to Supabase, and email dispatched."
     }
