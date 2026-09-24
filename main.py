@@ -393,18 +393,19 @@ def generate_report_groq(prompt_text: str):
             print(f"--> Calling Groq API (Attempt {attempt}/{max_retries})...")
 
             chat_completion = groq_client.chat.completions.create(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an agricultural AI diagnostic assistant helping smallholder farmers."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt_text,
-                    }
-                ],
-                model="llama-3.3-70b-versatile",
-                temperature=0.3
+    messages=[
+        {
+            "role": "system",
+            "content": "You are an agricultural AI diagnostic assistant helping smallholder farmers."
+        },
+        {
+            "role": "user",
+            "content": prompt_text,
+        }
+    ],
+    model="llama-3.1-8b-instant",  # Updated to reliable production model ID
+    temperature=0.3
+)
             )
 
             if chat_completion and chat_completion.choices:
