@@ -168,7 +168,7 @@ def save_report_to_supabase(
         return
 
     try:
-        print("--> Inserting diagnostic record into Supabase table 'crop_reports'...")
+        print("--> Inserting diagnostic record into Supabase table 'farm_reports'...")
 
         data = {
             "farmer_email": sender_email,
@@ -183,7 +183,7 @@ def save_report_to_supabase(
             "status": status
         }
 
-        response = supabase_client.table("crop_reports").insert(data).execute()
+        response = supabase_client.table("farm_reports").insert(data).execute()
 
         print()
         print("==========================================")
@@ -710,7 +710,7 @@ def process_pending_queue():
 
     try:
         # Fetch pending items from Supabase
-        res = supabase_client.table("crop_reports").select("*").eq("status", "pending_manual_review").execute()
+        res = supabase_client.table("farm_reports").select("*").eq("status", "pending_manual_review").execute()
         pending_records = res.data
 
         if not pending_records:
@@ -751,7 +751,7 @@ Reference the site name ({site_name}) and tailor your diagnostic advice specific
                 ai_engine_used = "RunPod (Qwen/Qwen3-0.6B) [Queued Batch]"
                 
                 # Update Supabase record status to resolved
-                supabase_client.table("crop_reports").update({
+                supabase_client.table("farm_reports").update({
                     "diagnostic_report": report,
                     "ai_engine": ai_engine_used,
                     "status": "resolved"
