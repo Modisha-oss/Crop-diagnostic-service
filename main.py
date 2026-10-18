@@ -26,7 +26,7 @@ warnings.filterwarnings("ignore")
 
 app = FastAPI(
     title="Modisha's Agricultural AI Assistant (Groq, Gemini, RunPod & Supabase)",
-    version="1.8"
+    version="1.9"
 )
 
 
@@ -160,7 +160,7 @@ def save_report_to_supabase(
 
     print()
     print("==========================================")
-    print("       SUPABASE DATABASE SAVE STARTED")
+    print("        SUPABASE DATABASE SAVE STARTED")
     print("==========================================")
 
     if not supabase_client:
@@ -194,7 +194,178 @@ def save_report_to_supabase(
     except Exception as error:
         print()
         print("==========================================")
-        print("      SUPABASE RECORD SAVE ERROR")
+        print("       SUPABASE RECORD SAVE ERROR")
+        print("==========================================")
+        print("Error type:", type(error).__name__)
+        print("Error message:", str(error))
+        print("==========================================")
+
+
+# ============================================================
+# SAVE WEEKLY REPORT TO RELATIONAL SUPABASE TABLES
+# ============================================================
+
+def save_weekly_report_to_supabase(payload: dict):
+    print()
+    print("==========================================")
+    print("    WEEKLY REPORT SUPABASE SAVE STARTED")
+    print("==========================================")
+
+    if not supabase_client:
+        print("WARNING: Supabase client is not configured. Skipping weekly report storage.")
+        return
+
+    try:
+        flat_payload = flatten_kobo_payload(payload)
+
+        site_location = "Not specified"
+        region = "Not specified"
+
+        for key, val in flat_payload.items():
+            if not val or not isinstance(val, str):
+                continue
+            k_lower = key.lower()
+            if k_lower.endswith("site_location") or k_lower.endswith("site_name") or k_lower.endswith("farm_name"):
+                site_location = val.strip()
+            elif k_lower.endswith("region") or k_lower.endswith("location") or k_lower.endswith("province"):
+                region = val.strip()
+
+        # 1. Insert Main Weekly Site Report
+        main_report_data = {
+            "site_location": site_location,
+            "region": region
+        }
+
+        main_res = supabase_client.table("weekly_site_reports").insert(main_report_data).execute()
+
+        if not main_res.data:
+            print("--> Failed to create main weekly report record.")
+            return
+
+        report_id = main_res.data[0]["id"]
+        print(f"--> Main weekly report created with ID: {report_id}")
+
+        # 2. Insert Seedlings Received Breakdown
+        seedlings_list = payload.get("seedlings_received", []) or payload.get("Seedlings Recieved/Planted", [])
+        if isinstance(seedlings_list, list):
+            seedling_records = []
+            for item in seedlings_list:
+                if isinstance(item, dict):
+                    f_item = flatten_kobo_payload(item)
+                    receipt_date, seedlings_type, qty = "Not specified", "Not specified", 0
+                    for k, v in f_item.items():
+                        kl = k.lower()
+                        if "date" in kl:
+                            receipt_date = str(v)
+                        elif "seedlings_type" in kl or "seedling" in kl:
+                            seedlings_type = str(v)
+                        elif "quantity" in kl or "qty" in kl:
+                            try:
+                                qty = int(v)
+                            except:
+                                qty = 0
+                    seedling_records.append({
+                        "report_id": report_id,
+                        "receipt_date": receipt_date,
+                        "seedlings_type": seedlings_type,
+                        "quantity_received": qty
+                    })
+            if seedling_records:
+                supabase_client.table("weekly_seedlings_received").insert(seedling_records).execute()
+                print(f"--> Inserted {len(seedling_records)} seedling records.")
+
+        # 3. Insert Site Donations Breakdown
+        donations_list = payload.get("weekly_site_donations_breakdown", []) or payload.get("donations_breakdown", [])
+        if isinstance(donations_list, list):
+            donation_records = []
+            for item in donations_list:
+                if isinstance(item, dict):
+                    f_item = flatten_kobo_payload(item)
+                    d_date, veg_type, qty_donated, orgs, org_name, direct_b, contacts, indirect_b = "Not specified", "Not specified", 0, "", "", 0, "", 0
+                    for k, v in f_item.items():
+                        kl = k.lower()
+                        if "date" in kl:
+                            d_date = str(v)
+                        elif "vegetables_type" in kl or "vegetable" in kl:
+                            veg_type = str(v)
+                        elif "qunatity_donated" in kl or "quantity_donated" in kl:
+                            try:
+                                qty_donated = float(v)
+                            except:
+                                qty_donated = 0.0
+                        elif "organizations" in kl and "name" not in kl:
+                            orgs = str(v)
+                        elif "name_of_orgainzation" in kl or "name_of_organization" in kl:
+                            org_name = str(v)
+                        elif "direct_beneficiary" in kl:
+                            try:
+                                direct_b = int(v)
+                            except:
+                                direct_b = 0
+                        elif "contact_numbers" in kl:
+                            contacts = str(v)
+                        elif "indirect_beneficiaries" in kl:
+                            try:
+                                indirect_b = int(v)
+                            except:
+                                indirect_b = 0
+                    donation_records.append({
+                        "report_id": report_id,
+                        "donation_date": d_date,
+                        "vegetable_type": veg_type,
+                        "quantity_donated": qty_donated,
+                        "organizations": orgs,
+                        "name_of_organization": org_name,
+                        "direct_beneficiaries": direct_b,
+                        "contact_numbers": contacts,
+                        "indirect_beneficiaries": indirect_b
+                    })
+            if donation_records:
+                supabase_client.table("weekly_site_donations").insert(donation_records).execute()
+                print(f"--> Inserted {len(donation_records)} donation records.")
+
+        # 4. Insert Site Sales Breakdown
+        sales_list = payload.get("weekly_site_sales_breakdown", []) or payload.get("sales_breakdown", [])
+        if isinstance(sales_list, list):
+            sales_records = []
+            for item in sales_list:
+                if isinstance(item, dict):
+                    f_item = flatten_kobo_payload(item)
+                    s_date, veg_type, qty_sold, unit_price = "Not specified", "Not specified", 0.0, 0.0
+                    for k, v in f_item.items():
+                        kl = k.lower()
+                        if "date" in kl:
+                            s_date = str(v)
+                        elif "vegatable_type" in kl or "vegetable_type" in kl:
+                            veg_type = str(v)
+                        elif "quantity_sold" in kl:
+                            try:
+                                qty_sold = float(v)
+                            except:
+                                qty_sold = 0.0
+                        elif "unit_price" in kl:
+                            try:
+                                unit_price = float(v)
+                            except:
+                                unit_price = 0.0
+                    sales_records.append({
+                        "report_id": report_id,
+                        "sales_date": s_date,
+                        "vegetable_type": veg_type,
+                        "quantity_sold": qty_sold,
+                        "unit_price": unit_price
+                    })
+            if sales_records:
+                supabase_client.table("weekly_site_sales").insert(sales_records).execute()
+                print(f"--> Inserted {len(sales_records)} sales records.")
+
+        print("==========================================")
+        print("    WEEKLY REPORT SAVED SUCCESSFULLY!")
+        print("==========================================")
+
+    except Exception as error:
+        print("==========================================")
+        print("     WEEKLY REPORT SUPABASE SAVE ERROR")
         print("==========================================")
         print("Error type:", type(error).__name__)
         print("Error message:", str(error))
@@ -688,6 +859,18 @@ async def handle_kobo_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
+    form_id = str(payload.get("_xform_id_string", "")).lower()
+    form_title = str(payload.get("form_title", "")).lower()
+
+    # Route Weekly Site Reports to relational tables and skip AI
+    if "weekly" in form_id or "weekly" in form_title:
+        save_weekly_report_to_supabase(payload)
+        return {
+            "status": "success",
+            "message": "Weekly site report saved to relational tables. AI diagnostic bypassed."
+        }
+
+    # Otherwise, process site issues through the AI diagnostic pipeline
     process_farm_report(payload)
 
     return {
