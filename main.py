@@ -227,7 +227,7 @@ def save_weekly_report_to_supabase(payload: dict):
             k_lower = key.lower()
             if k_lower.endswith("site_location") or k_lower.endswith("site_name") or k_lower.endswith("farm_name"):
                 site_location = val.strip()
-            elif k_lower.endswith("region") or k_lower.endswith("location") or k_lower.endswith("province"):
+            elif k_lower.endswith("region") or (k_lower.endswith("location") and "site" not in k_lower) or k_lower.endswith("province"):
                 region = val.strip()
 
         # 1. Insert Main Weekly Site Report
@@ -245,8 +245,22 @@ def save_weekly_report_to_supabase(payload: dict):
         report_id = main_res.data[0]["id"]
         print(f"--> Main weekly report created with ID: {report_id}")
 
+        # Helper to find lists anywhere in the raw payload dynamically
+        def find_payload_list(keywords):
+            for k, v in payload.items():
+                if isinstance(v, list):
+                    if any(kw in k.lower() for kw in keywords):
+                        return v
+            # Also check nested dictionaries if needed
+            for k, v in payload.items():
+                if isinstance(v, dict):
+                    for sub_k, sub_v in v.items():
+                        if isinstance(sub_v, list) and any(kw in sub_k.lower() for kw in keywords):
+                            return sub_v
+            return []
+
         # 2. Insert Seedlings Received Breakdown
-        seedlings_list = payload.get("seedlings_received", []) or payload.get("Seedlings Recieved/Planted", [])
+        seedlings_list = find_payload_list(["seedling", "recieved", "received", "planted"])
         if isinstance(seedlings_list, list):
             seedling_records = []
             for item in seedlings_list:
@@ -275,7 +289,7 @@ def save_weekly_report_to_supabase(payload: dict):
                 print(f"--> Inserted {len(seedling_records)} seedling records.")
 
         # 3. Insert Site Donations Breakdown
-        donations_list = payload.get("weekly_site_donations_breakdown", []) or payload.get("donations_breakdown", [])
+        donations_list = find_payload_list(["donation", "donated", "beneficiary", "organization"])
         if isinstance(donations_list, list):
             donation_records = []
             for item in donations_list:
@@ -325,7 +339,7 @@ def save_weekly_report_to_supabase(payload: dict):
                 print(f"--> Inserted {len(donation_records)} donation records.")
 
         # 4. Insert Site Sales Breakdown
-        sales_list = payload.get("weekly_site_sales_breakdown", []) or payload.get("sales_breakdown", [])
+        sales_list = find_payload_list(["sale", "sold", "price"])
         if isinstance(sales_list, list):
             sales_records = []
             for item in sales_list:
@@ -370,8 +384,6 @@ def save_weekly_report_to_supabase(payload: dict):
         print("Error type:", type(error).__name__)
         print("Error message:", str(error))
         print("==========================================")
-
-
 # ============================================================
 # SEND EMAIL FUNCTION (RESEND)
 # ============================================================
