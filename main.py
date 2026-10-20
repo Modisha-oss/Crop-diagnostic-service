@@ -142,7 +142,7 @@ def sanitize_email(raw_val: str) -> str:
 
 
 # ============================================================
-# SAVE TO SUPABASE DATABASE
+# SAVE TO SUPABASE DATABASE (SITE ISSUES)
 # ============================================================
 
 def save_report_to_supabase(
@@ -601,7 +601,6 @@ def generate_report_runpod(prompt_text: str):
     for attempt in range(1, max_retries + 1):
         try:
             print(f"--> Calling RunPod Modisha-Engine (Attempt {attempt}/{max_retries}): {endpoint_url}")
-            # verify=False bypassed for mobile network & self-signed runpod proxy certs
             response = requests.post(endpoint_url, json=payload, verify=False, timeout=30)
             
             if response.status_code == 200:
@@ -619,7 +618,7 @@ def generate_report_runpod(prompt_text: str):
 
 
 # ============================================================
-# PROCESS FARM REPORT
+# PROCESS FARM REPORT (SITE ISSUES)
 # ============================================================
 
 def process_farm_report(payload: dict):
@@ -640,53 +639,31 @@ def process_farm_report(payload: dict):
     weekly_observation = "No text observation provided."
     image_parts = []
 
-    # --------------------------------------------------------
-    # STRICT SUFFIX EXTRACTION FOR EXACT FIELD MATCHING
-    # --------------------------------------------------------
-
     for key, val in flat_payload.items():
         if not val or not isinstance(val, str):
             continue
 
         k_lower = key.lower()
 
-        # 1. Email Address
         if k_lower.endswith("farmer_email") or k_lower.endswith("email"):
             sender_email = sanitize_email(val)
-
-        # 2. Weekly Observation
         elif k_lower.endswith("weekly_observation") or k_lower.endswith("observation") or k_lower.endswith("issue_description"):
             weekly_observation = val.strip()
-
-        # 3. Site Name
         elif k_lower.endswith("site_name") or k_lower.endswith("farm_name"):
             site_name = val.strip()
-
-        # 4. Region / Location
         elif k_lower.endswith("location") or k_lower.endswith("region") or k_lower.endswith("province"):
             region_location = val.strip()
-
-        # 5. Soil Type
         elif k_lower.endswith("soil_type") or k_lower.endswith("soil"):
             soil_type = val.strip()
-
-        # 6. Crop / Seedling Type
         elif k_lower.endswith("seedling_crop_type") or k_lower.endswith("crop_type") or k_lower.endswith("seedling"):
             seedling_crop_type = val.strip()
-
-        # 7. Date Planted
         elif "date" in k_lower or "planted" in k_lower:
             date_planted = val.strip()
 
-    # Fallback to GPS if location is still default
     if region_location == "Not specified" and "_geolocation" in payload:
         geo = payload.get("_geolocation")
         if geo and isinstance(geo, list) and len(geo) >= 2:
             region_location = f"GPS: {geo[0]}, {geo[1]}"
-
-    # --------------------------------------------------------
-    # EXTRACT & DOWNLOAD ATTACHED IMAGES
-    # --------------------------------------------------------
 
     attachments = payload.get("_attachments", [])
     if attachments and isinstance(attachments, list):
@@ -707,29 +684,8 @@ def process_farm_report(payload: dict):
                     except Exception as error:
                         print("--> Failed to format image part:", str(error))
 
-    # --------------------------------------------------------
-    # DISPLAY EXTRACTED INFORMATION
-    # --------------------------------------------------------
-
-    print()
-    print("------------------------------------------")
-    print(f"Sender Email: {sender_email}")
-    print(f"Site Name: {site_name}")
-    print(f"Region/Location: {region_location}")
-    print(f"Date Planted: {date_planted}")
-    print(f"Soil Type: {soil_type}")
-    print(f"Seedling/Crop Type: {seedling_crop_type}")
-    print(f"Weekly Observations: {weekly_observation}")
-    print(f"Total Images Attached: {len(image_parts)}")
-    print("------------------------------------------")
-
-    # --------------------------------------------------------
-    # CREATE AI PROMPT
-    # --------------------------------------------------------
-
     prompt_text = f"""
 You are an agricultural expert helping smallholder farmers in South Africa.
-
 Analyze the following site issue report, soil parameters, and crop data.
 
 SITE / FARM NAME: {site_name}
@@ -741,19 +697,8 @@ FIELD OBSERVATION / ISSUE REPORTED: {weekly_observation}
 
 TASK:
 Provide a comprehensive agricultural assessment. 
-Reference the site name ({site_name}) and tailor your diagnostic, soil management, and climate-related advice specifically to the regional conditions of {region_location} in South Africa.
-
-Include:
-1. Primary Issue / Pests / Diseases identified based on the observation data
-2. Severity Rating (Mild, Moderate, or Severe)
-3. Region-Specific Advisory & Practical Actions for the Farmer at {site_name} (taking into account the soil type: {soil_type} and crop: {seedling_crop_type})
-4. Preventative Measures & Next Week Monitoring
-5. Confidence Level
+Reference the site name ({site_name}) and tailor your diagnostic advice specifically to {region_location} in South Africa.
 """
-
-    # --------------------------------------------------------
-    # AI EXECUTION ENGINE (GROQ -> GEMINI -> RUNPOD -> QUEUE)
-    # --------------------------------------------------------
 
     diagnostic_report = None
     ai_engine_used = ""
@@ -764,41 +709,21 @@ Include:
     if diagnostic_report:
         ai_engine_used = "Groq (llama-3.1-8b-instant)"
     else:
-        print("--> Groq engine failed or unavailable. Falling back to Gemini...")
-        
         # Tier 2: Gemini AI
         diagnostic_report = generate_report_gemini(prompt_text, image_parts)
         if diagnostic_report:
             ai_engine_used = "Gemini (gemini-3.6-flash)"
         else:
-            print("--> Gemini engine failed or offline. Falling back to RunPod Modisha-Engine...")
-
             # Tier 3: RunPod Text Engine
             diagnostic_report = generate_report_runpod(prompt_text)
             if diagnostic_report:
                 ai_engine_used = "RunPod (Qwen/Qwen3-0.6B)"
             else:
-                # Tier 4: Safety Net (All Automated Engines Offline -> Save as Pending)
-                print("--> ALL automated models are offline. Saving submission to Supabase as pending review.")
                 submission_status = "pending_manual_review"
-                diagnostic_report = "Report generation delayed. All automated AI models are currently offline. Your submission has been securely queued for manual processing once the RunPod engine is started."
+                diagnostic_report = "Report generation delayed. All automated AI models are currently offline. Queued for manual processing."
                 ai_engine_used = "Queued for Manual Review"
 
-    # --------------------------------------------------------
-    # REPORT DISPATCH & DATABASE PERSISTENCE
-    # --------------------------------------------------------
-
     if diagnostic_report:
-        print()
-        print("==========================================")
-        print("         AI REPORT PROCESSED")
-        print("==========================================")
-        print(f"Engine Used / Status: {ai_engine_used} [{submission_status}]")
-        print("------------------------------------------")
-        print(diagnostic_report)
-        print("==========================================")
-
-        # 1. SAVE TO SUPABASE
         save_report_to_supabase(
             sender_email=sender_email,
             site_name=site_name,
@@ -812,7 +737,6 @@ Include:
             status=submission_status
         )
 
-        # 2. DISPATCH REPORT VIA EMAIL (Only if successfully generated immediately)
         if sender_email and submission_status == "resolved":
             send_email_message(
                 sender_email,
@@ -822,8 +746,6 @@ Include:
                 seedling_crop_type,
                 diagnostic_report
             )
-        else:
-            print("INFO: Submission queued or no valid email. Skipping direct email dispatch until processed.")
 
 
 # ============================================================
@@ -859,40 +781,43 @@ async def handle_kobo_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    form_id = str(payload.get("_xform_id_string", "")).lower()
-    form_title = str(payload.get("form_title", "")).lower()
+    flat_payload = flatten_kobo_payload(payload)
 
-    # Route Weekly Site Reports to relational tables and skip AI
-    if "weekly" in form_id or "weekly" in form_title:
+    # Inspect payload for Report_type selection
+    report_type_value = ""
+    for k, v in flat_payload.items():
+        if "report_type" in k.lower() and isinstance(v, str):
+            report_type_value = v.strip().lower()
+            break
+
+    print(f"--> Incoming Kobo Submission | Detected Report_type: '{report_type_value}'", flush=True)
+
+    # 1. ROUTE WEEKLY SITE REPORTING -> RELATIONAL TABLES (BYPASS AI)
+    if "weekly" in report_type_value:
         save_weekly_report_to_supabase(payload)
         return {
             "status": "success",
-            "message": "Weekly site report saved to relational tables. AI diagnostic bypassed."
+            "message": "Weekly Site Reporting saved to relational tables. AI bypassed."
         }
 
-    # Otherwise, process site issues through the AI diagnostic pipeline
+    # 2. ROUTE SITE ISSUES -> FARM_REPORTS (AI PIPELINE)
     process_farm_report(payload)
 
     return {
         "status": "success",
-        "message": "Kobo submission processed through multi-tier fallback pipeline."
+        "message": "Site Issues submission processed through AI pipeline and saved to farm_reports."
     }
 
 
 @app.post("/process-queue")
 def process_pending_queue():
-    """
-    SWITCH BUTTON / ENDPOINT: Click or trigger this after spinning up your RunPod pod 
-    to automatically analyze all pending submissions, generate reports, update Supabase, and email farmers.
-    """
     if not supabase_client:
         raise HTTPException(status_code=500, detail="Supabase client is not configured.")
     
     if not RUNPOD_TEXT_URL:
-        raise HTTPException(status_code=400, detail="RunPod URL (RUNPOD_TEXT_URL) is missing. Update Render environment variables first.")
+        raise HTTPException(status_code=400, detail="RunPod URL (RUNPOD_TEXT_URL) is missing.")
 
     try:
-        # Fetch pending items from Supabase
         res = supabase_client.table("farm_reports").select("*").eq("status", "pending_manual_review").execute()
         pending_records = res.data
 
@@ -910,7 +835,6 @@ def process_pending_queue():
             farmer_email = item.get("farmer_email")
             date_planted = item.get("date_planted", "Not specified")
 
-            # Rebuild prompt for the RunPod model
             prompt_text = f"""
 You are an agricultural expert helping smallholder farmers in South Africa.
 Analyze the following site issue report, soil parameters, and crop data.
@@ -921,26 +845,19 @@ SOIL TYPE: {soil_type}
 SEEDLING/CROP TYPE: {crop_type}
 FARM LOCATION / REGION: {region_location}
 FIELD OBSERVATION / ISSUE REPORTED: {weekly_observation}
-
-TASK:
-Provide a comprehensive agricultural assessment. 
-Reference the site name ({site_name}) and tailor your diagnostic advice specifically to {region_location} in South Africa.
 """
 
-            # Generate report using active RunPod instance
             report = generate_report_runpod(prompt_text)
 
             if report:
                 ai_engine_used = "RunPod (Qwen/Qwen3-0.6B) [Queued Batch]"
                 
-                # Update Supabase record status to resolved
                 supabase_client.table("farm_reports").update({
                     "diagnostic_report": report,
                     "ai_engine": ai_engine_used,
                     "status": "resolved"
                 }).eq("id", record_id).execute()
 
-                # Dispatch email to farmer now that report is generated
                 if farmer_email:
                     send_email_message(
                         to_email=farmer_email,
@@ -955,7 +872,7 @@ Reference the site name ({site_name}) and tailor your diagnostic advice specific
 
         return {
             "status": "success", 
-            "message": f"Successfully processed {processed_count} pending submissions using the RunPod engine."
+            "message": f"Successfully processed {processed_count} pending submissions using RunPod."
         }
 
     except Exception as error:
