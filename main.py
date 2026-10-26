@@ -815,20 +815,34 @@ def health():
 @app.post("/webhook/kobo")
 @app.post("/webhook")
 async def handle_webhook(request: Request):
+    payload = {}
+
+    # 1. Try parsing JSON body
     try:
+        payload = await request.json()
+    except Exception:
+        pass
+
+    # 2. Fallback to Form Data if JSON is empty (Jotform standard behavior)
+    if not payload:
         try:
-            payload = await request.json()
-        except Exception:
             form_data = await request.form()
             payload = dict(form_data)
-            
-            if "rawRequest" in payload and isinstance(payload["rawRequest"], str):
-                try:
-                    payload = json.loads(payload["rawRequest"])
-                except Exception:
-                    pass
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid request payload")
+        except Exception:
+            payload = {}
+
+    # 3. Parse Jotform's nested rawRequest string if available
+    if isinstance(payload, dict) and "rawRequest" in payload:
+        raw_req = payload["rawRequest"]
+        if isinstance(raw_req, str):
+            try:
+                payload = json.loads(raw_req)
+            except Exception:
+                pass
+
+    if not payload:
+        print("--> Warning: Received empty or unparseable webhook payload", flush=True)
+        return {"status": "error", "message": "Payload was empty or unparseable"}
 
     flat_payload = flatten_kobo_payload(payload)
 
@@ -856,11 +870,11 @@ async def handle_webhook(request: Request):
         process_farm_report(payload)
         processed_actions.append("Site Issues processed through AI pipeline and saved to farm_reports")
 
+    # Fallback if Report_type unique name wasn't detected: execute default pipeline
     if not processed_actions:
-        return {
-            "status": "error",
-            "message": "No valid Report_type selected in submission."
-        }
+        print("--> Fallback: No specific Report_type matched, routing payload to process_farm_report", flush=True)
+        process_farm_report(payload)
+        processed_actions.append("Processed via default farm report pipeline")
 
     return {
         "status": "success",
