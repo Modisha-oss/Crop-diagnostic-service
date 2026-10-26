@@ -816,22 +816,33 @@ def health():
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     payload = {}
+    body_bytes = await request.body()
 
-    # 1. Try parsing JSON body
-    try:
-        payload = await request.json()
-    except Exception:
-        pass
+    # 1. Try loading body bytes as JSON directly
+    if body_bytes:
+        try:
+            payload = json.loads(body_bytes.decode("utf-8"))
+        except Exception:
+            pass
 
-    # 2. Fallback to Form Data if JSON is empty (Jotform standard behavior)
+    # 2. If not JSON, try parsing via FastAPI form data
     if not payload:
         try:
             form_data = await request.form()
             payload = dict(form_data)
         except Exception:
-            payload = {}
+            pass
 
-    # 3. Parse Jotform's nested rawRequest string if available
+    # 3. Fallback: Parse raw form-urlencoded bytes manually if body exists
+    if not payload and body_bytes:
+        try:
+            from urllib.parse import parse_qs
+            parsed_qs = parse_qs(body_bytes.decode("utf-8"))
+            payload = {k: (v[0] if len(v) == 1 else v) for k, v in parsed_qs.items()}
+        except Exception:
+            pass
+
+    # 4. Parse Jotform's nested rawRequest string if available
     if isinstance(payload, dict) and "rawRequest" in payload:
         raw_req = payload["rawRequest"]
         if isinstance(raw_req, str):
@@ -841,7 +852,7 @@ async def handle_webhook(request: Request):
                 pass
 
     if not payload:
-        print("--> Warning: Received empty or unparseable webhook payload", flush=True)
+        print("--> Warning: Received empty or unparseable webhook payload. Raw body length:", len(body_bytes), flush=True)
         return {"status": "error", "message": "Payload was empty or unparseable"}
 
     flat_payload = flatten_kobo_payload(payload)
