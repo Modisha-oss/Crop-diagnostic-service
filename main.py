@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import warnings
 import requests
 import resend
@@ -35,17 +36,11 @@ app = FastAPI(
 # ============================================================
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
 KOBO_TOKEN = os.environ.get("KOBO_TOKEN")
-
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
-
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-
 RUNPOD_TEXT_URL = os.environ.get("RUNPOD_TEXT_URL")
 
 SENDER_EMAIL = os.environ.get(
@@ -88,13 +83,13 @@ else:
 
 
 # ============================================================
-# HELPER: FLATTEN NESTED KOBO PAYLOAD
+# HELPER: FLATTEN PAYLOAD (KOBO & JOTFORM COMPATIBLE)
 # ============================================================
 
 def flatten_kobo_payload(payload_dict, parent_key=''):
     """
-    Recursively flattens KoboToolbox payloads (including nested groups like site_issues)
-    so field names like 'site_issues/weekly_observation' can be matched exactly.
+    Recursively flattens KoboToolbox and Jotform payloads
+    so nested groups and unique field names can be matched easily.
     """
     items = []
     if isinstance(payload_dict, dict):
@@ -115,7 +110,29 @@ def flatten_kobo_payload(payload_dict, parent_key=''):
 
 
 # ============================================================
-# HELPER: SANITIZE KOBO EMAIL ADDRESS
+# HELPER: SAFE JOTFORM WIDGET LIST PARSER
+# ============================================================
+
+def parse_jotform_list(val):
+    """Safely parses Jotform Configurable List data whether it arrives as a list, dict, or JSON string."""
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        val = val.strip()
+        if val.startswith("[") or val.startswith("{"):
+            try:
+                parsed = json.loads(val)
+                if isinstance(parsed, list):
+                    return parsed
+                elif isinstance(parsed, dict):
+                    return [parsed]
+            except:
+                pass
+    return []
+
+
+# ============================================================
+# HELPER: SANITIZE EMAIL ADDRESS
 # ============================================================
 
 def sanitize_email(raw_val: str) -> str:
@@ -225,9 +242,9 @@ def save_weekly_report_to_supabase(payload: dict):
             if not val or not isinstance(val, str):
                 continue
             k_lower = key.lower()
-            if k_lower.endswith("site_location") or k_lower.endswith("site_name") or k_lower.endswith("farm_name"):
+            if "site_location" in k_lower or "site_name" in k_lower or "farm_name" in k_lower:
                 site_location = val.strip()
-            elif k_lower.endswith("region") or (k_lower.endswith("location") and "site" not in k_lower) or k_lower.endswith("province"):
+            elif ("region" in k_lower or "location" in k_lower or "province" in k_lower) and "site" not in k_lower:
                 region = val.strip()
 
         # 1. Insert Main Weekly Site Report
@@ -245,133 +262,129 @@ def save_weekly_report_to_supabase(payload: dict):
         report_id = main_res.data[0]["id"]
         print(f"--> Main weekly report created with ID: {report_id}")
 
-        # Helper to find lists anywhere in the raw payload dynamically
-        def find_payload_list(keywords):
-            for k, v in payload.items():
-                if isinstance(v, list):
-                    if any(kw in k.lower() for kw in keywords):
-                        return v
-            # Also check nested dictionaries if needed
-            for k, v in payload.items():
-                if isinstance(v, dict):
-                    for sub_k, sub_v in v.items():
-                        if isinstance(sub_v, list) and any(kw in sub_k.lower() for kw in keywords):
-                            return sub_v
-            return []
+        def extract_all_lists(data):
+            found_lists = []
+            if isinstance(data, list):
+                found_lists.append(data)
+                for item in data:
+                    found_lists.extend(extract_all_lists(item))
+            elif isinstance(data, dict):
+                for k, v in data.items():
+                    found_lists.extend(extract_all_lists(v))
+            return found_lists
 
-        # 2. Insert Seedlings Received Breakdown
-        seedlings_list = find_payload_list(["seedling", "recieved", "received", "planted"])
-        if isinstance(seedlings_list, list):
-            seedling_records = []
-            for item in seedlings_list:
+        all_payload_lists = extract_all_lists(payload)
+
+        seedling_records = []
+        donation_records = []
+        sales_records = []
+
+        for lst_raw in all_payload_lists:
+            lst = parse_jotform_list(lst_raw)
+            for item in lst:
                 if isinstance(item, dict):
                     f_item = flatten_kobo_payload(item)
-                    receipt_date, seedlings_type, qty = "Not specified", "Not specified", 0
-                    for k, v in f_item.items():
-                        kl = k.lower()
-                        if "date" in kl:
-                            receipt_date = str(v)
-                        elif "seedlings_type" in kl or "seedling" in kl:
-                            seedlings_type = str(v)
-                        elif "quantity" in kl or "qty" in kl:
-                            try:
-                                qty = int(v)
-                            except:
-                                qty = 0
-                    seedling_records.append({
-                        "report_id": report_id,
-                        "receipt_date": receipt_date,
-                        "seedlings_type": seedlings_type,
-                        "quantity_received": qty
-                    })
-            if seedling_records:
-                supabase_client.table("weekly_seedlings_received").insert(seedling_records).execute()
-                print(f"--> Inserted {len(seedling_records)} seedling records.")
+                    keys_string = " ".join([str(k).lower() for k in f_item.keys()])
 
-        # 3. Insert Site Donations Breakdown
-        donations_list = find_payload_list(["donation", "donated", "beneficiary", "organization"])
-        if isinstance(donations_list, list):
-            donation_records = []
-            for item in donations_list:
-                if isinstance(item, dict):
-                    f_item = flatten_kobo_payload(item)
-                    d_date, veg_type, qty_donated, orgs, org_name, direct_b, contacts, indirect_b = "Not specified", "Not specified", 0, "", "", 0, "", 0
-                    for k, v in f_item.items():
-                        kl = k.lower()
-                        if "date" in kl:
-                            d_date = str(v)
-                        elif "vegetables_type" in kl or "vegetable" in kl:
-                            veg_type = str(v)
-                        elif "qunatity_donated" in kl or "quantity_donated" in kl:
-                            try:
-                                qty_donated = float(v)
-                            except:
-                                qty_donated = 0.0
-                        elif "organizations" in kl and "name" not in kl:
-                            orgs = str(v)
-                        elif "name_of_orgainzation" in kl or "name_of_organization" in kl:
-                            org_name = str(v)
-                        elif "direct_beneficiary" in kl:
-                            try:
-                                direct_b = int(v)
-                            except:
-                                direct_b = 0
-                        elif "contact_numbers" in kl:
-                            contacts = str(v)
-                        elif "indirect_beneficiaries" in kl:
-                            try:
-                                indirect_b = int(v)
-                            except:
-                                indirect_b = 0
-                    donation_records.append({
-                        "report_id": report_id,
-                        "donation_date": d_date,
-                        "vegetable_type": veg_type,
-                        "quantity_donated": qty_donated,
-                        "organizations": orgs,
-                        "name_of_organization": org_name,
-                        "direct_beneficiaries": direct_b,
-                        "contact_numbers": contacts,
-                        "indirect_beneficiaries": indirect_b
-                    })
-            if donation_records:
-                supabase_client.table("weekly_site_donations").insert(donation_records).execute()
-                print(f"--> Inserted {len(donation_records)} donation records.")
+                    # Check for Seedlings
+                    if any(kw in keys_string for kw in ["seedling", "quantity_received", "qty_received"]):
+                        receipt_date, seedlings_type, qty = "Not specified", "Not specified", 0
+                        for k, v in f_item.items():
+                            kl = k.lower()
+                            if "date" in kl:
+                                receipt_date = str(v)
+                            elif "seedling" in kl or "type" in kl:
+                                seedlings_type = str(v)
+                            elif "quantity" in kl or "qty" in kl:
+                                try:
+                                    qty = int(v)
+                                except:
+                                    qty = 0
+                        seedling_records.append({
+                            "report_id": report_id,
+                            "receipt_date": receipt_date,
+                            "seedlings_type": seedlings_type,
+                            "quantity_received": qty
+                        })
 
-        # 4. Insert Site Sales Breakdown
-        sales_list = find_payload_list(["sale", "sold", "price"])
-        if isinstance(sales_list, list):
-            sales_records = []
-            for item in sales_list:
-                if isinstance(item, dict):
-                    f_item = flatten_kobo_payload(item)
-                    s_date, veg_type, qty_sold, unit_price = "Not specified", "Not specified", 0.0, 0.0
-                    for k, v in f_item.items():
-                        kl = k.lower()
-                        if "date" in kl:
-                            s_date = str(v)
-                        elif "vegatable_type" in kl or "vegetable_type" in kl:
-                            veg_type = str(v)
-                        elif "quantity_sold" in kl:
-                            try:
-                                qty_sold = float(v)
-                            except:
-                                qty_sold = 0.0
-                        elif "unit_price" in kl:
-                            try:
-                                unit_price = float(v)
-                            except:
-                                unit_price = 0.0
-                    sales_records.append({
-                        "report_id": report_id,
-                        "sales_date": s_date,
-                        "vegetable_type": veg_type,
-                        "quantity_sold": qty_sold,
-                        "unit_price": unit_price
-                    })
-            if sales_records:
-                supabase_client.table("weekly_site_sales").insert(sales_records).execute()
-                print(f"--> Inserted {len(sales_records)} sales records.")
+                    # Check for Donations
+                    elif any(kw in keys_string for kw in ["donation", "donated", "beneficiary", "organization", "contact"]):
+                        d_date, veg_type, qty_donated, orgs, org_name, direct_b, contacts, indirect_b = "Not specified", "Not specified", 0.0, "", "", 0, "", 0
+                        for k, v in f_item.items():
+                            kl = k.lower()
+                            if "date" in kl:
+                                d_date = str(v)
+                            elif "vegetable" in kl or "veg" in kl:
+                                veg_type = str(v)
+                            elif "quantity_donated" in kl or "qunatity_donated" in kl:
+                                try:
+                                    qty_donated = float(v)
+                                except:
+                                    qty_donated = 0.0
+                            elif "organizations" in kl and "name" not in kl:
+                                orgs = str(v)
+                            elif "name_of_organization" in kl or "name_of_orgainzation" in kl:
+                                org_name = str(v)
+                            elif "direct_beneficiary" in kl:
+                                try:
+                                    direct_b = int(v)
+                                except:
+                                    direct_b = 0
+                            elif "contact" in kl:
+                                contacts = str(v)
+                            elif "indirect_beneficiary" in kl:
+                                try:
+                                    indirect_b = int(v)
+                                except:
+                                    indirect_b = 0
+                        donation_records.append({
+                            "report_id": report_id,
+                            "donation_date": d_date,
+                            "vegetable_type": veg_type,
+                            "quantity_donated": qty_donated,
+                            "organizations": orgs,
+                            "name_of_organization": org_name,
+                            "direct_beneficiaries": direct_b,
+                            "contact_numbers": contacts,
+                            "indirect_beneficiaries": indirect_b
+                        })
+
+                    # Check for Sales
+                    elif any(kw in keys_string for kw in ["sold", "unit_price", "sales_date"]):
+                        s_date, veg_type, qty_sold, unit_price = "Not specified", "Not specified", 0.0, 0.0
+                        for k, v in f_item.items():
+                            kl = k.lower()
+                            if "date" in kl:
+                                s_date = str(v)
+                            elif "vegetable" in kl or "vegatable" in kl:
+                                veg_type = str(v)
+                            elif "quantity_sold" in kl:
+                                try:
+                                    qty_sold = float(v)
+                                except:
+                                    qty_sold = 0.0
+                            elif "unit_price" in kl:
+                                try:
+                                    unit_price = float(v)
+                                except:
+                                    unit_price = 0.0
+                        sales_records.append({
+                            "report_id": report_id,
+                            "sales_date": s_date,
+                            "vegetable_type": veg_type,
+                            "quantity_sold": qty_sold,
+                            "unit_price": unit_price
+                        })
+
+        if seedling_records:
+            supabase_client.table("weekly_seedlings_received").insert(seedling_records).execute()
+            print(f"--> Inserted {len(seedling_records)} seedling records.")
+        if donation_records:
+            supabase_client.table("weekly_site_donations").insert(donation_records).execute()
+            print(f"--> Inserted {len(donation_records)} donation records.")
+        if sales_records:
+            supabase_client.table("weekly_site_sales").insert(sales_records).execute()
+            print(f"--> Inserted {len(sales_records)} sales records.")
 
         print("==========================================")
         print("    WEEKLY REPORT SAVED SUCCESSFULLY!")
@@ -384,6 +397,8 @@ def save_weekly_report_to_supabase(payload: dict):
         print("Error type:", type(error).__name__)
         print("Error message:", str(error))
         print("==========================================")
+
+
 # ============================================================
 # SEND EMAIL FUNCTION (RESEND)
 # ============================================================
@@ -458,14 +473,14 @@ def send_email_message(
 
 
 # ============================================================
-# DOWNLOAD KOBO MEDIA FUNCTION
+# DOWNLOAD MEDIA FUNCTION (KOBO & JOTFORM)
 # ============================================================
 
 def download_kobo_media(download_url: str):
 
     print()
     print("==========================================")
-    print("        KOBO MEDIA DOWNLOAD STARTED")
+    print("        MEDIA DOWNLOAD STARTED")
     print("==========================================")
     print(f"Download URL: {download_url}")
 
@@ -482,15 +497,15 @@ def download_kobo_media(download_url: str):
 
         if res.status_code == 200:
             content_type = res.headers.get("Content-Type", "image/jpeg")
-            print("--> Kobo image download successful!")
+            print("--> Image download successful!")
             print(f"--> MIME type: {content_type}")
             return res.content, content_type
         else:
-            print(f"--> Failed to download Kobo media. HTTP {res.status_code}")
+            print(f"--> Failed to download media. HTTP {res.status_code}")
             return None, "image/jpeg"
 
     except Exception as error:
-        print("--> Exception occurred while downloading Kobo media:")
+        print("--> Exception occurred while downloading media:")
         print(type(error).__name__, str(error))
         return None, "image/jpeg"
 
@@ -586,7 +601,6 @@ def generate_report_runpod(prompt_text: str):
         print("--> RunPod URL (RUNPOD_TEXT_URL) not configured. Skipping RunPod execution.")
         return None
 
-    # Ensure proxy endpoint targets chat completions path correctly
     base_url = RUNPOD_TEXT_URL.strip()
     if not base_url.endswith("/v1/chat/completions"):
         endpoint_url = base_url.rstrip("/") + "/v1/chat/completions"
@@ -652,49 +666,62 @@ def process_farm_report(payload: dict):
     image_parts = []
 
     for key, val in flat_payload.items():
-        if not val or not isinstance(val, str):
+        if val is None:
             continue
-
+        val_str = str(val).strip()
         k_lower = key.lower()
 
-        if k_lower.endswith("farmer_email") or k_lower.endswith("email"):
-            sender_email = sanitize_email(val)
-        elif k_lower.endswith("weekly_observation") or k_lower.endswith("observation") or k_lower.endswith("issue_description"):
-            weekly_observation = val.strip()
-        elif k_lower.endswith("site_name") or k_lower.endswith("farm_name"):
-            site_name = val.strip()
-        elif k_lower.endswith("location") or k_lower.endswith("region") or k_lower.endswith("province"):
-            region_location = val.strip()
-        elif k_lower.endswith("soil_type") or k_lower.endswith("soil"):
-            soil_type = val.strip()
-        elif k_lower.endswith("seedling_crop_type") or k_lower.endswith("crop_type") or k_lower.endswith("seedling"):
-            seedling_crop_type = val.strip()
+        if "email" in k_lower:
+            sender_email = sanitize_email(val_str)
+        elif "observation" in k_lower or "description" in k_lower or "issue" in k_lower:
+            weekly_observation = val_str
+        elif "site_name" in k_lower or "farm_name" in k_lower:
+            site_name = val_str
+        elif ("location" in k_lower or "region" in k_lower or "province" in k_lower) and "site" not in k_lower:
+            region_location = val_str
+        elif "soil" in k_lower:
+            soil_type = val_str
+        elif "crop" in k_lower or "seedling" in k_lower:
+            seedling_crop_type = val_str
         elif "date" in k_lower or "planted" in k_lower:
-            date_planted = val.strip()
+            date_planted = val_str
 
     if region_location == "Not specified" and "_geolocation" in payload:
         geo = payload.get("_geolocation")
         if geo and isinstance(geo, list) and len(geo) >= 2:
             region_location = f"GPS: {geo[0]}, {geo[1]}"
 
-    attachments = payload.get("_attachments", [])
-    if attachments and isinstance(attachments, list):
-        for attachment in attachments:
-            download_url = attachment.get("download_url")
-            mimetype = attachment.get("mimetype", "image/")
+    # Extract attached images from Jotform or Kobo
+    def extract_image_urls(data):
+        urls = []
+        if isinstance(data, list):
+            for item in data:
+                urls.extend(extract_image_urls(item))
+        elif isinstance(data, dict):
+            for k, v in data.items():
+                if "image" in str(k).lower() or "file" in str(k).lower() or isinstance(v, (list, dict)):
+                    urls.extend(extract_image_urls(v))
+                elif isinstance(v, str) and (v.startswith("http://") or v.startswith("https://")) and any(ext in v.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                    urls.append(v)
+        return urls
 
-            if download_url and "image" in mimetype:
-                img_bytes, img_mime = download_kobo_media(download_url)
-                if img_bytes:
-                    try:
-                        part = types.Part.from_bytes(
-                            data=img_bytes,
-                            mime_type=img_mime
-                        )
-                        image_parts.append(part)
-                        print(f"--> Successfully prepared image attachment {len(image_parts)}")
-                    except Exception as error:
-                        print("--> Failed to format image part:", str(error))
+    image_urls = extract_image_urls(payload)
+    attachments = payload.get("_attachments", [])
+    if isinstance(attachments, list):
+        for att in attachments:
+            url = att.get("download_url")
+            if url:
+                image_urls.append(url)
+
+    for url in image_urls:
+        img_bytes, img_mime = download_kobo_media(url)
+        if img_bytes:
+            try:
+                part = types.Part.from_bytes(data=img_bytes, mime_type=img_mime)
+                image_parts.append(part)
+                print(f"--> Successfully prepared image attachment {len(image_parts)}")
+            except Exception as error:
+                print("--> Failed to format image part:", str(error))
 
     prompt_text = f"""
 You are an agricultural expert helping smallholder farmers in South Africa.
@@ -787,37 +814,57 @@ def health():
 
 @app.post("/webhook/kobo")
 @app.post("/webhook")
-async def handle_kobo_webhook(request: Request):
+async def handle_webhook(request: Request):
     try:
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except Exception:
+            form_data = await request.form()
+            payload = dict(form_data)
+            
+            if "rawRequest" in payload and isinstance(payload["rawRequest"], str):
+                try:
+                    payload = json.loads(payload["rawRequest"])
+                except Exception:
+                    pass
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        raise HTTPException(status_code=400, detail="Invalid request payload")
 
     flat_payload = flatten_kobo_payload(payload)
 
-    # Inspect payload for Report_type selection
-    report_type_value = ""
+    # Extract all report type selections (supports checkboxes / lists / comma-separated strings)
+    report_types = []
     for k, v in flat_payload.items():
-        if "report_type" in k.lower() and isinstance(v, str):
-            report_type_value = v.strip().lower()
-            break
+        if "report_type" in k.lower() or "reporttype" in k.lower():
+            if isinstance(v, list):
+                report_types.extend([str(item).lower() for item in v])
+            elif isinstance(v, str):
+                parts = [p.strip().lower() for p in v.split(",")]
+                report_types.extend(parts)
 
-    print(f"--> Incoming Kobo Submission | Detected Report_type: '{report_type_value}'", flush=True)
+    print(f"--> Incoming Webhook Submission | Detected Report Types: {report_types}", flush=True)
 
-    # 1. ROUTE WEEKLY SITE REPORTING -> RELATIONAL TABLES (BYPASS AI)
-    if "weekly" in report_type_value:
+    processed_actions = []
+
+    # 1. ROUTE WEEKLY SITE REPORTING -> RELATIONAL TABLES
+    if any("weekly" in rt for rt in report_types):
         save_weekly_report_to_supabase(payload)
-        return {
-            "status": "success",
-            "message": "Weekly Site Reporting saved to relational tables. AI bypassed."
-        }
+        processed_actions.append("Weekly Site Reporting saved to relational tables")
 
     # 2. ROUTE SITE ISSUES -> FARM_REPORTS (AI PIPELINE)
-    process_farm_report(payload)
+    if any("issue" in rt for rt in report_types):
+        process_farm_report(payload)
+        processed_actions.append("Site Issues processed through AI pipeline and saved to farm_reports")
+
+    if not processed_actions:
+        return {
+            "status": "error",
+            "message": "No valid Report_type selected in submission."
+        }
 
     return {
         "status": "success",
-        "message": "Site Issues submission processed through AI pipeline and saved to farm_reports."
+        "message": " | ".join(processed_actions)
     }
 
 
