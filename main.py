@@ -242,9 +242,9 @@ def save_weekly_report_to_supabase(payload: dict):
             if not val or not isinstance(val, str):
                 continue
             k_lower = key.lower()
-            if "site_location" in k_lower or "site_name" in k_lower or "farm_name" in k_lower:
+            if "site" in k_lower or "farm" in k_lower:
                 site_location = val.strip()
-            elif ("region" in k_lower or "location" in k_lower or "province" in k_lower) and "site" not in k_lower:
+            elif "region" in k_lower or "location" in k_lower or "province" in k_lower or "area" in k_lower:
                 region = val.strip()
 
         # 1. Insert Main Weekly Site Report
@@ -287,7 +287,7 @@ def save_weekly_report_to_supabase(payload: dict):
                     keys_string = " ".join([str(k).lower() for k in f_item.keys()])
 
                     # Check for Seedlings
-                    if any(kw in keys_string for kw in ["seedling", "quantity_received", "qty_received"]):
+                    if any(kw in keys_string for kw in ["seedling", "quantity", "qty"]):
                         receipt_date, seedlings_type, qty = "Not specified", "Not specified", 0
                         for k, v in f_item.items():
                             kl = k.lower()
@@ -316,23 +316,23 @@ def save_weekly_report_to_supabase(payload: dict):
                                 d_date = str(v)
                             elif "vegetable" in kl or "veg" in kl:
                                 veg_type = str(v)
-                            elif "quantity_donated" in kl or "qunatity_donated" in kl:
+                            elif "quantity" in kl or "donated" in kl:
                                 try:
                                     qty_donated = float(v)
                                 except:
                                     qty_donated = 0.0
                             elif "organizations" in kl and "name" not in kl:
                                 orgs = str(v)
-                            elif "name_of_organization" in kl or "name_of_orgainzation" in kl:
+                            elif "name" in kl and "org" in kl:
                                 org_name = str(v)
-                            elif "direct_beneficiary" in kl:
+                            elif "direct" in kl:
                                 try:
                                     direct_b = int(v)
                                 except:
                                     direct_b = 0
                             elif "contact" in kl:
                                 contacts = str(v)
-                            elif "indirect_beneficiary" in kl:
+                            elif "indirect" in kl:
                                 try:
                                     indirect_b = int(v)
                                 except:
@@ -350,20 +350,20 @@ def save_weekly_report_to_supabase(payload: dict):
                         })
 
                     # Check for Sales
-                    elif any(kw in keys_string for kw in ["sold", "unit_price", "sales_date"]):
+                    elif any(kw in keys_string for kw in ["sold", "price", "sales"]):
                         s_date, veg_type, qty_sold, unit_price = "Not specified", "Not specified", 0.0, 0.0
                         for k, v in f_item.items():
                             kl = k.lower()
                             if "date" in kl:
                                 s_date = str(v)
-                            elif "vegetable" in kl or "vegatable" in kl:
+                            elif "vegetable" in kl or "veg" in kl:
                                 veg_type = str(v)
-                            elif "quantity_sold" in kl:
+                            elif "quantity" in kl or "sold" in kl:
                                 try:
                                     qty_sold = float(v)
                                 except:
                                     qty_sold = 0.0
-                            elif "unit_price" in kl:
+                            elif "price" in kl:
                                 try:
                                     unit_price = float(v)
                                 except:
@@ -671,19 +671,19 @@ def process_farm_report(payload: dict):
         val_str = str(val).strip()
         k_lower = key.lower()
 
-        if "email" in k_lower:
+        if "email" in k_lower or "mail" in k_lower:
             sender_email = sanitize_email(val_str)
-        elif "observation" in k_lower or "description" in k_lower or "issue" in k_lower:
+        elif "observation" in k_lower or "description" in k_lower or "issue" in k_lower or "comment" in k_lower:
             weekly_observation = val_str
-        elif "site_name" in k_lower or "farm_name" in k_lower:
+        elif "site" in k_lower or "farm" in k_lower:
             site_name = val_str
-        elif ("location" in k_lower or "region" in k_lower or "province" in k_lower) and "site" not in k_lower:
+        elif "location" in k_lower or "region" in k_lower or "province" in k_lower or "area" in k_lower or "address" in k_lower:
             region_location = val_str
         elif "soil" in k_lower:
             soil_type = val_str
-        elif "crop" in k_lower or "seedling" in k_lower:
+        elif "crop" in k_lower or "seedling" in k_lower or "plant" in k_lower:
             seedling_crop_type = val_str
-        elif "date" in k_lower or "planted" in k_lower:
+        elif "date" in k_lower or "planted" in k_lower or "time" in k_lower:
             date_planted = val_str
 
     if region_location == "Not specified" and "_geolocation" in payload:
@@ -855,12 +855,16 @@ async def handle_webhook(request: Request):
         print("--> Warning: Received empty or unparseable webhook payload. Raw body length:", len(body_bytes), flush=True)
         return {"status": "error", "message": "Payload was empty or unparseable"}
 
+    # DEBUG LOGS: Print out what Jotform sent so you can see keys
+    print(f"--> Incoming Webhook Payload Keys: {list(payload.keys())}", flush=True)
+    
     flat_payload = flatten_kobo_payload(payload)
+    print(f"--> Incoming Flattened Payload: {flat_payload}", flush=True)
 
     # Extract all report type selections (supports checkboxes / lists / comma-separated strings)
     report_types = []
     for k, v in flat_payload.items():
-        if "report_type" in k.lower() or "reporttype" in k.lower():
+        if "report" in k.lower() or "type" in k.lower() or "choice" in k.lower():
             if isinstance(v, list):
                 report_types.extend([str(item).lower() for item in v])
             elif isinstance(v, str):
